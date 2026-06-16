@@ -9,7 +9,7 @@
  * search, and server-side watermarking for PDF + image.
  */
 
-require('dotenv').config();
+
 
 const express = require('express');
 const mongoose = require('mongoose');
@@ -27,15 +27,18 @@ const { execFile } = require('child_process');
 const nodemailer = require('nodemailer');
 const { PDFDocument, rgb, degrees, StandardFonts } = require('pdf-lib');
 const sharp = require('sharp');
-
+const dotenv = require('dotenv');
+require('dotenv').config();
 const app = express();
 
 // ---------------------------------------------------------------- Config
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8007;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_only_secret_change_me';
 const JWT_EXPIRES = process.env.JWT_EXPIRES || '8h';
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/fortknox';
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:3000';
+const MONGO_URI = 'mongodb+srv://rudren202:DocumentAccessControl@cluster0.lbnevmr.mongodb.net/?appName=Cluster0';
+// const MONGO_URI = 'mongodb://127.0.0.1:27017/fortknox';
+const CLIENT_ORIGIN = 'https://lms1.wehear.in';
+// const CLIENT_ORIGIN = 'http://localhost:3000';
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
 const PASSWORD_MIN = 8;
 
@@ -47,7 +50,7 @@ const PASSWORD_MIN = 8;
 // Upgrade path: source this key from a KMS/Vault (AWS KMS, HashiCorp Vault) and
 // use envelope encryption per file — see TESTING.md / SECURITY.
 const FILE_ENC_KEY = (() => {
-  const hex = process.env.FILE_ENCRYPTION_KEY;
+  const hex = "2031047ae20df3a6fc170b8f4a42bf43421f3af8e24e8080f955feeffea48a68";
   if (hex && /^[0-9a-fA-F]{64}$/.test(hex)) return Buffer.from(hex, 'hex');
   if (process.env.NODE_ENV === 'production') {
     console.error('[SECURITY] FILE_ENCRYPTION_KEY is missing or invalid (need 64 hex chars). Refusing to start in production.');
@@ -513,7 +516,7 @@ app.post('/assets/upload', authenticate, authorize('Engineering', 'Legal', 'Mana
   const ip = clientIp(req);
   if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
   const scan = scanFile(req.file.path, req.file.originalname);
-  if (!scan.ok) { fs.unlink(req.file.path, () => {}); await logAudit({ action: 'UPLOAD_BLOCKED', userId: req.user.id, ip, details: `${req.file.originalname}: ${scan.reason}`, severity: 'critical' }); return res.status(400).json({ error: `Upload rejected: ${scan.reason}` }); }
+  if (!scan.ok) { fs.unlink(req.file.path, () => { }); await logAudit({ action: 'UPLOAD_BLOCKED', userId: req.user.id, ip, details: `${req.file.originalname}: ${scan.reason}`, severity: 'critical' }); return res.status(400).json({ error: `Upload rejected: ${scan.reason}` }); }
   try {
     const { filename, keywords, sensitivity, categoryId, departmentId, note, assetId } = req.body;
     // Scan happened on the plaintext temp; now encrypt it into the vault.
@@ -521,7 +524,7 @@ app.post('/assets/upload', authenticate, authorize('Engineering', 'Legal', 'Mana
     const fType = fileTypeLabel(req.file.originalname);
     if (assetId) {
       const asset = await Asset.findById(assetId);
-      if (!asset) { fs.unlink(enc.path, () => {}); return res.status(404).json({ error: 'Asset not found.' }); }
+      if (!asset) { fs.unlink(enc.path, () => { }); return res.status(404).json({ error: 'Asset not found.' }); }
       const nextV = asset.currentVersion + 1;
       asset.versions.push({ version: nextV, path: enc.path, size: enc.size, hash: enc.hash, uploadedBy: req.user.id, note: note || `Version ${nextV}` });
       asset.currentVersion = nextV;
@@ -529,14 +532,14 @@ app.post('/assets/upload', authenticate, authorize('Engineering', 'Legal', 'Mana
       await logAudit({ action: 'VERSION_UPLOAD', userId: req.user.id, ip, details: `asset=${asset._id} v=${nextV}` });
       return res.status(201).json({ message: 'New version uploaded.', asset });
     }
-    if (!categoryId) { fs.unlink(enc.path, () => {}); return res.status(400).json({ error: 'A category is required.' }); }
+    if (!categoryId) { fs.unlink(enc.path, () => { }); return res.status(400).json({ error: 'A category is required.' }); }
     const category = await Category.findById(categoryId);
-    if (!category) { fs.unlink(enc.path, () => {}); return res.status(400).json({ error: 'Selected category does not exist.' }); }
-    if (req.user.role !== 'Admin' && !category.allowedRoles.includes(req.user.role)) { fs.unlink(enc.path, () => {}); return res.status(403).json({ error: 'You cannot upload into this category.' }); }
+    if (!category) { fs.unlink(enc.path, () => { }); return res.status(400).json({ error: 'Selected category does not exist.' }); }
+    if (req.user.role !== 'Admin' && !category.allowedRoles.includes(req.user.role)) { fs.unlink(enc.path, () => { }); return res.status(403).json({ error: 'You cannot upload into this category.' }); }
     let departmentRef = null;
     if (departmentId) {
       const dept = await Department.findById(departmentId);
-      if (!dept || String(dept.category) !== String(category._id)) { fs.unlink(enc.path, () => {}); return res.status(400).json({ error: 'Selected department does not belong to this category.' }); }
+      if (!dept || String(dept.category) !== String(category._id)) { fs.unlink(enc.path, () => { }); return res.status(400).json({ error: 'Selected department does not belong to this category.' }); }
       departmentRef = dept._id;
     }
     const asset = await Asset.create({
@@ -564,7 +567,7 @@ app.post('/assets/bulk-upload', authenticate, authorize('Engineering', 'Legal', 
     const created = []; const skipped = [];
     for (const f of req.files) {
       const scan = scanFile(f.path, f.originalname);
-      if (!scan.ok) { fs.unlink(f.path, () => {}); skipped.push({ name: f.originalname, reason: scan.reason }); continue; }
+      if (!scan.ok) { fs.unlink(f.path, () => { }); skipped.push({ name: f.originalname, reason: scan.reason }); continue; }
       const enc = ingestUpload(f.path); // encrypt + remove plaintext temp
       const asset = await Asset.create({
         filename: f.originalname, type: f.mimetype, fileType: fileTypeLabel(f.originalname) || '',
@@ -1004,7 +1007,7 @@ function generateTempPassword() {
   const pick = (s) => s[crypto.randomInt(s.length)];
   let chars = [pick(upper), pick(lower), pick(digits), pick(symbols)];
   while (chars.length < 12) chars.push(pick(all));
-  for (let i = chars.length - 1; i > 0; i--) { const j = crypto.randomInt(i + 1); [chars[i], chars[j]] = [chars[j], chars[i]]; }
+  for (let i = chars.length - 1; i > 0; i--) { const j = crypto.randomInt(i + 1);[chars[i], chars[j]] = [chars[j], chars[i]]; }
   return chars.join('');
 }
 
