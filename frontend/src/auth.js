@@ -2,7 +2,7 @@ import axios from 'axios';
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 
 // const API = 'https://lmsdevelopment.wehear.in'
-const API = '  http://localhost:8007';
+const API = '  http://localhost:5000';
 
 // Shared axios instance. credentials:true sends the httpOnly auth cookie.
 // No token is stored in JS/localStorage anymore (mitigates XSS token theft).

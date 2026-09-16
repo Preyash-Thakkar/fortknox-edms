@@ -166,13 +166,14 @@ exports.bulkUpload = async (req, res) => {
 
 exports.updateAsset = async (req, res) => {
     const ip = clientIp(req);
-    const { filename, keywords, sensitivity, departmentId } = req.body || {};
+    const { filename, keywords, sensitivity, departmentId, controlStatus } = req.body || {};
     try {
         const asset = await Asset.findById(req.params.id);
         if (!asset) return res.status(404).json({ error: 'Asset not found.' });
         if (filename) asset.filename = filename;
         if (keywords !== undefined) asset.keywords = keywords;
         if (sensitivity && SENSITIVITY.includes(sensitivity)) asset.sensitivity = sensitivity;
+        if (controlStatus) asset.controlStatus = controlStatus; // <-- ADD THIS LINE
         if (departmentId !== undefined) {
             if (departmentId === '' || departmentId === null) asset.department = null;
             else { const dept = await Department.findById(departmentId); if (dept && String(dept.category) === String(asset.category)) asset.department = dept._id; }

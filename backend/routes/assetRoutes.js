@@ -35,5 +35,6 @@ router.get('/assets/:id/grants', authenticate, authorize('Admin'), assetControll
 router.get('/assets/:id/versions', authenticate, assetController.getVersions);
 router.get('/assets/:id/view', authenticate, assetController.viewAsset);
 router.get('/assets/:id/raw', authenticate, assetController.rawAsset);
+router.get('/stats', authenticate, assetController.getStats);
 
 module.exports = router;

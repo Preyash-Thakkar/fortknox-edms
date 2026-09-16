@@ -1,10 +1,76 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../auth';
 import { Icon } from './ui';
+import RoleGuard from './RoleGuard';
 
 const SENS = ['Public', 'Internal', 'Confidential', 'Strictly Confidential'];
 
-export default function AssetAdminModal({ asset, categories, onClose, onChanged }) {
+// New Component: Document Control Workflow
+const WorkflowControls = ({ asset, currentUser, onStatusChange }) => {
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const handleStatusChange = async (newStatus) => {
+    setLoading(true);
+    setMsg('');
+    try {
+      // Note: Ensure your backend PATCH /assets/:id endpoint accepts 'controlStatus'
+      await api.patch(`/assets/${asset._id}`, { controlStatus: newStatus });
+      setMsg(`Asset successfully moved to ${newStatus}`);
+      if (onStatusChange) onStatusChange(); // Refresh the data globally
+    } catch (error) {
+      alert(error.response?.data?.error || 'Failed to update status');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-lg">
+      <div className="bg-surface-container-low p-md rounded border border-outline-variant">
+        <p className="font-label-lg text-label-lg text-on-surface-variant mb-3 uppercase tracking-wider">
+          Document Control Workflow
+        </p>
+        <p className="font-body-md mb-4">
+          Current Status: <span className="font-bold text-primary">{asset.controlStatus || 'Draft'}</span>
+        </p>
+
+        {msg && <div className="text-primary font-body-sm mb-4">{msg}</div>}
+
+        {/* ROLE GUARD: Only Admins and Management can see these buttons */}
+        <RoleGuard user={currentUser} allowedRoles={['Management']}>
+          <div className="flex gap-2">
+            {(asset.controlStatus === 'Draft' || !asset.controlStatus) && (
+              <button onClick={() => handleStatusChange('InReview')} disabled={loading} className="px-4 py-2 rounded bg-yellow-500 text-white font-bold text-sm hover:opacity-90 transition-opacity">
+                Submit for Review
+              </button>
+            )}
+
+            {asset.controlStatus === 'InReview' && (
+              <>
+                <button onClick={() => handleStatusChange('Approved')} disabled={loading} className="px-4 py-2 rounded bg-green-600 text-white font-bold text-sm hover:opacity-90 transition-opacity">
+                  Approve
+                </button>
+                <button onClick={() => handleStatusChange('Draft')} disabled={loading} className="px-4 py-2 rounded bg-red-500 text-white font-bold text-sm hover:opacity-90 transition-opacity">
+                  Reject (Back to Draft)
+                </button>
+              </>
+            )}
+
+            {asset.controlStatus === 'Approved' && (
+              <button onClick={() => handleStatusChange('Obsolete')} disabled={loading} className="px-4 py-2 rounded bg-gray-600 text-white font-bold text-sm hover:opacity-90 transition-opacity">
+                Mark as Obsolete
+              </button>
+            )}
+          </div>
+        </RoleGuard>
+      </div>
+    </div>
+  );
+};
+
+// CRITICAL: Ensure you pass `currentUser` into this modal from the parent Repository page
+export default function AssetAdminModal({ asset, categories, currentUser, onClose, onChanged }) {
   const [tab, setTab] = useState('edit');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -24,16 +90,15 @@ export default function AssetAdminModal({ asset, categories, onClose, onChanged 
   const [grants, setGrants] = useState({
     userView: [], userDownload: [],
     deptView: [], deptDownload: [],
-    accessLogs: [] // New: History of access durations
+    accessLogs: []
   });
 
-  const [grantTargetType, setGrantTargetType] = useState('user'); // 'user' or 'department'
+  const [grantTargetType, setGrantTargetType] = useState('user');
   const [grantTargetId, setGrantTargetId] = useState('');
   const [grantKind, setGrantKind] = useState('view');
 
   const targetCategory = categories.find((c) => c._id === targetCat);
 
-  // Flatten all departments across categories for the department grant dropdown
   const allDepartments = categories.flatMap(c =>
     c.departments.map(d => ({ ...d, categoryName: c.name }))
   );
@@ -44,7 +109,6 @@ export default function AssetAdminModal({ asset, categories, onClose, onChanged 
         api.get(`/assets/${asset._id}/grants`),
         api.get('/users')
       ]);
-      // Expecting backend to return active grants and accessLogs
       setGrants({
         userView: g.data.userView || [],
         userDownload: g.data.userDownload || [],
@@ -110,7 +174,7 @@ export default function AssetAdminModal({ asset, categories, onClose, onChanged 
 
   const TabBtn = ({ id, label, icon }) => (
     <button onClick={() => { setTab(id); setMsg(''); setErr(''); }}
-      className={`flex items-center gap-1.5 px-3 py-2 font-label-lg text-label-lg font-bold border-b-2 transition-all ${tab === id ? 'border-primary text-primary' : 'border-transparent text-on-surface-variant hover:text-primary'}`}>
+      className={`flex items-center gap-1.5 px-3 py-2 font-label-lg text-label-lg font-bold border-b-2 transition-all whitespace-nowrap ${tab === id ? 'border-primary text-primary' : 'border-transparent text-on-surface-variant hover:text-primary'}`}>
       <Icon name={icon} size={16} /> {label}
     </button>
   );
@@ -125,8 +189,9 @@ export default function AssetAdminModal({ asset, categories, onClose, onChanged 
           <button onClick={onClose} className="p-1.5 rounded hover:bg-surface-container-high"><Icon name="close" /></button>
         </div>
 
-        <div className="flex gap-1 px-lg border-b border-outline-variant overflow-x-auto">
+        <div className="flex gap-1 px-lg border-b border-outline-variant overflow-x-auto scrollbar-hide">
           <TabBtn id="edit" label="Edit" icon="edit" />
+          <TabBtn id="status" label="Status & Workflow" icon="check_circle" />
           <TabBtn id="move" label="Move / Copy" icon="drive_file_move" />
           <TabBtn id="grants" label="Access & Logs" icon="key" />
           <TabBtn id="delete" label="Delete" icon="delete" />
@@ -149,6 +214,11 @@ export default function AssetAdminModal({ asset, categories, onClose, onChanged 
                 </select></div>
               <div className="flex justify-end"><button onClick={saveEdit} className="px-4 py-2 rounded bg-primary text-on-primary font-bold font-label-lg text-label-lg hover:opacity-90">Save changes</button></div>
             </>
+          )}
+
+          {/* WORKFLOW STATUS TAB */}
+          {tab === 'status' && (
+            <WorkflowControls asset={asset} currentUser={currentUser} onStatusChange={onChanged} />
           )}
 
           {/* MOVE/COPY TAB */}
@@ -175,7 +245,6 @@ export default function AssetAdminModal({ asset, categories, onClose, onChanged 
           {/* GRANTS & LOGS TAB */}
           {tab === 'grants' && (
             <div className="space-y-lg">
-              {/* Grant Assignment Form */}
               <div className="bg-surface-container-low p-md rounded border border-outline-variant">
                 <p className="font-label-lg text-label-lg text-on-surface-variant mb-3 uppercase tracking-wider">Issue New Access</p>
                 <div className="flex gap-3 mb-3">
@@ -204,14 +273,12 @@ export default function AssetAdminModal({ asset, categories, onClose, onChanged 
                 </div>
               </div>
 
-              {/* Active Grants List */}
               <div>
                 <p className="font-label-lg text-label-lg text-on-surface-variant mb-2 uppercase tracking-wider">Active Permissions</p>
                 <div className="space-y-2 border border-outline-variant rounded p-3 bg-surface">
                   {(!grants.userView.length && !grants.userDownload.length && !grants.deptView.length && !grants.deptDownload.length) &&
                     <p className="font-body-sm text-on-surface-variant italic">No explicit grants.</p>}
 
-                  {/* Map User Grants */}
                   {grants.userView.map((u) => (
                     <div key={`uv-${u._id}`} className="flex items-center justify-between text-body-sm">
                       <span><Icon name="person" size={14} className="inline mr-1 text-on-surface-variant" /> {u.name} <span className="text-on-surface-variant">· view</span></span>
@@ -225,7 +292,6 @@ export default function AssetAdminModal({ asset, categories, onClose, onChanged 
                     </div>
                   ))}
 
-                  {/* Map Dept Grants */}
                   {grants.deptView.map((d) => (
                     <div key={`dv-${d._id}`} className="flex items-center justify-between text-body-sm">
                       <span><Icon name="groups" size={14} className="inline mr-1 text-on-surface-variant" /> {d.name} <span className="text-on-surface-variant">· view</span></span>
@@ -241,7 +307,6 @@ export default function AssetAdminModal({ asset, categories, onClose, onChanged 
                 </div>
               </div>
 
-              {/* Historical Logs */}
               <div>
                 <p className="font-label-lg text-label-lg text-on-surface-variant mb-2 uppercase tracking-wider flex items-center gap-1">
                   <Icon name="history" size={16} /> Access History Log
