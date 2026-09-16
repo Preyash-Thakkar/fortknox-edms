@@ -112,3 +112,56 @@ exports.resetPassword = async (req, res) => {
         res.json({ message: 'Password reset.', tempPassword, user: { id: user._id, email: user.email } });
     } catch (err) { console.error('[USER_RESET]', err.message); res.status(500).json({ error: 'Could not reset password.' }); }
 };
+
+exports.updateUser = async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        // Restrict Management from editing Admins
+        if (req.user.role === 'Management' && user.role === 'Admin') {
+            return res.status(403).json({ error: 'Cannot modify Admin accounts.' });
+        }
+
+        const { name, email, password, role, department, title } = req.body;
+
+        if (name) user.name = name;
+        if (email) user.email = email;
+        if (role) user.role = role;
+        if (department) user.department = department;
+        if (title !== undefined) user.title = title;
+
+        if (password) {
+            user.password = await bcrypt.hash(password, 12);
+        }
+
+        await user.save();
+        res.json({ message: 'User updated successfully', user });
+    } catch (err) {
+        // Handle duplicate email error on update
+        if (err.code === 11000) {
+            return res.status(400).json({ error: 'Email already in use.' });
+        }
+        res.status(400).json({ error: err.message });
+    }
+};
+
+exports.deleteUser = async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        if (req.user.role === 'Management' && user.role === 'Admin') {
+            return res.status(403).json({ error: 'Cannot delete Admin accounts.' });
+        }
+
+        user.email = `deleted_${Date.now()}_${user.email}`;
+        user.deletedAt = new Date();
+        user.active = false; // Optional: if you use an isActive flag
+
+        await user.save();
+        res.json({ message: 'User deleted successfully' });
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+};

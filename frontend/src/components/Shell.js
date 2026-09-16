@@ -5,9 +5,9 @@ import { useCategories } from '../useCategories';
 import { Icon } from './ui';
 import ProfileModal from './ProfileModal';
 
-// Static items that always appear.
 const NAV_STATIC = [
   { to: '/requests', icon: 'pending_actions', label: 'Access Requests', roles: ['Admin', 'Engineering', 'Legal', 'Management'] },
+  { to: '/users', icon: 'manage_accounts', label: 'User Management', roles: ['Admin', 'Management'] },
 ];
 const NAV_BOTTOM = [
   { to: '/settings', icon: 'verified_user', label: 'Security Settings', roles: ['Admin'] },
@@ -88,7 +88,8 @@ export default function Shell({ children, breadcrumb }) {
     <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
       <aside className="h-screen w-64 bg-primary flex flex-col shrink-0">
-        <div className="p-lg flex-1 overflow-y-auto">
+        <div className="p-lg flex-1 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+
           <div className="flex items-center gap-base mb-xl">
             <div className="w-9 h-9 bg-white/10 rounded flex items-center justify-center text-white">
               <Icon name="shield" fill={1} />
