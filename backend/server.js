@@ -14,6 +14,7 @@ const { execFile } = require('child_process');
 const nodemailer = require('nodemailer');
 const { PDFDocument, rgb, degrees, StandardFonts } = require('pdf-lib');
 const sharp = require('sharp');
+const { sendEmail } = require('./utils/mailer');
 require('dotenv').config();
 
 // Execute Database Connection
@@ -73,22 +74,7 @@ const TEMP_DIR = process.env.VAULT_TEMP_DIR || path.join(os.tmpdir(), 'fk-upload
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true, mode: 0o700 });
 try { fs.chmodSync(TEMP_DIR, 0o700); } catch { /* ignore */ }
 
-// ---------------------------------------------------------------- Email
-let mailer = null;
-if (process.env.SMTP_HOST) {
-  mailer = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined,
-  });
-}
-async function sendEmail(to, subject, text) {
-  if (!to) return;
-  if (!mailer) { console.log(`[EMAIL:console] To: ${to} | ${subject}\n${text}\n`); return; }
-  try { await mailer.sendMail({ from: process.env.SMTP_FROM || 'edms@local', to, subject, text }); }
-  catch (err) { console.error('[EMAIL] send failed:', err.message); }
-}
+
 
 // ---------------------------------------------------------------- Models
 const User = require('./models/User');
@@ -100,13 +86,10 @@ const Notification = require('./models/Notification');
 const AuditLog = require('./models/AuditLog');
 
 // ---------------------------------------------------------------- Helpers
-async function logAudit({ action, userId = null, ip = '', details = '', severity = 'info' }) {
-  try { await AuditLog.create({ action, userId, ip, details, severity, timestamp: new Date() }); }
-  catch (err) { console.error('[AUDIT] write failed:', err.message); }
-}
-function clientIp(req) {
-  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
-}
+// ---------------------------------------------------------------- Helpers
+const { logAudit, clientIp } = require('./utils/logger');
+const { authenticate, authorize, setAuthCookie } = require('./middlewares/authMiddleware');
+
 function sha256Buffer(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
 
 // --- Encryption at rest (AES-256-GCM) ---
@@ -179,28 +162,6 @@ function scanFile(filepath, originalName) {
   return { ok: true };
 }
 
-// ---------------------------------------------------------------- Auth Middleware
-function authenticate(req, res, next) {
-  const token = req.cookies?.fk_token || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
-  if (!token) return res.status(401).json({ error: 'Not authenticated.' });
-  try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    req.user = { id: payload.id, role: payload.role, email: payload.email, name: payload.name };
-    next();
-  } catch { return res.status(401).json({ error: 'Invalid or expired session.' }); }
-}
-function authorize(...allowed) {
-  return (req, res, next) => {
-    if (!req.user) return res.status(401).json({ error: 'Not authenticated.' });
-    if (req.user.role === 'Admin' || allowed.includes(req.user.role)) return next();
-    return res.status(403).json({ error: 'Forbidden: insufficient role privileges.' });
-  };
-}
-function setAuthCookie(res, user) {
-  const token = jwt.sign({ id: user._id, role: user.role, email: user.email, name: user.name }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
-  res.cookie('fk_token', token, { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'lax', maxAge: 8 * 60 * 60 * 1000 });
-}
-
 // ---------------------------------------------------------------- Multer Config
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, TEMP_DIR),
@@ -215,414 +176,10 @@ const upload = multer({
   },
 });
 
-const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many login attempts. Please wait a few minutes and try again.' } });
-
 // ================================================================ ROUTES
-app.get('/', (req, res) => res.json({ service: 'Fort Knox EDMS API', status: 'ok', version: 2 }));
-
-app.post('/auth/login', loginLimiter, async (req, res) => {
-  const { email, password } = req.body || {};
-  const ip = clientIp(req);
-  if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' });
-  try {
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user || !(await bcrypt.compare(password, user.password))) {
-      await logAudit({ action: 'LOGIN_FAILED', ip, details: `email=${email}`, severity: 'warn' });
-      return res.status(401).json({ error: 'Invalid credentials.' });
-    }
-    if (user.active === false) {
-      await logAudit({ action: 'LOGIN_BLOCKED_INACTIVE', userId: user._id, ip, severity: 'warn' });
-      return res.status(403).json({ error: 'This account has been deactivated. Contact your administrator.' });
-    }
-    setAuthCookie(res, user);
-    await logAudit({ action: 'LOGIN', userId: user._id, ip, details: `role=${user.role}` });
-    res.json({ user: { id: user._id, name: user.name, email: user.email, role: user.role, title: user.title, mustChangePassword: user.mustChangePassword } });
-  } catch (err) { console.error('[LOGIN]', err.message); res.status(500).json({ error: 'Login failed.' }); }
-});
-
-app.post('/auth/logout', (req, res) => { res.clearCookie('fk_token'); res.json({ message: 'Logged out.' }); });
-
-app.get('/me', authenticate, async (req, res) => {
-  const user = await User.findById(req.user.id).select('-password').lean();
-  if (!user) return res.status(404).json({ error: 'Not found.' });
-  res.json({ user });
-});
-
-app.post('/auth/change-password', authenticate, async (req, res) => {
-  const ip = clientIp(req);
-  const { currentPassword, newPassword } = req.body || {};
-  if (!newPassword || newPassword.length < PASSWORD_MIN) return res.status(400).json({ error: `New password must be at least ${PASSWORD_MIN} characters.` });
-  try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ error: 'User not found.' });
-    if (!user.mustChangePassword) {
-      if (!currentPassword || !(await bcrypt.compare(currentPassword, user.password))) return res.status(401).json({ error: 'Current password is incorrect.' });
-    }
-    user.password = await bcrypt.hash(newPassword, 12);
-    user.mustChangePassword = false;
-    await user.save();
-    setAuthCookie(res, user);
-    await logAudit({ action: 'PASSWORD_CHANGED', userId: user._id, ip });
-    res.json({ message: 'Password updated.' });
-  } catch (err) { console.error('[CHANGE_PW]', err.message); res.status(500).json({ error: 'Could not change password.' }); }
-});
-
-app.get('/stats', authenticate, async (req, res) => {
-  try {
-    const isAdmin = req.user.role === 'Admin';
-    const [totalAssets, pendingReqs, criticalEvents] = await Promise.all([
-      Asset.countDocuments({}), AccessRequest.countDocuments({ status: 'Pending' }), AuditLog.countDocuments({ severity: 'critical' }),
-    ]);
-
-    let accessible = totalAssets;
-    if (!isAdmin) {
-      const role = req.user.role;
-      const uid = new mongoose.Types.ObjectId(req.user.id);
-      const result = await Asset.aggregate([
-        {
-          $lookup: {
-            from: 'departments',
-            localField: 'department',
-            foreignField: '_id',
-            as: '_dept',
-          },
-        },
-        {
-          $addFields: {
-            _deptAllowed: { $ifNull: [{ $arrayElemAt: ['$_dept.allowedRoles', 0] }, []] },
-          },
-        },
-        {
-          $match: {
-            $or: [
-              {
-                allowedRoles: role,
-                $or: [
-                  { _deptAllowed: { $size: 0 } },
-                  { _deptAllowed: role },
-                ],
-              },
-              { userViewGrants: uid },
-            ],
-          },
-        },
-        { $count: 'n' },
-      ]);
-      accessible = result[0]?.n || 0;
-    }
-
-    res.json({ totalAssets, accessibleAssets: accessible, pendingRequests: pendingReqs, criticalEvents });
-  } catch (err) { console.error('[STATS]', err.message); res.status(500).json({ error: 'Could not load stats.' }); }
-});
-
-app.get('/assets', authenticate, async (req, res) => {
-  try {
-    const { category, department, q } = req.query;
-    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
-    const skip = (page - 1) * limit;
-
-    const filter = {};
-    if (category) filter.category = category;
-    if (department) filter.department = department;
-
-    let useTextScore = false;
-    if (q && q.trim()) {
-      const term = q.trim();
-      if (term.length >= 3) {
-        filter.$text = { $search: term };
-        useTextScore = true;
-      } else {
-        const rx = new RegExp('^' + term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-        filter.filename = rx;
-      }
-    }
-
-    const projection = useTextScore ? { score: { $meta: 'textScore' } } : {};
-    const sort = useTextScore ? { score: { $meta: 'textScore' } } : { updatedAt: -1 };
-
-    const [total, assets] = await Promise.all([
-      Asset.countDocuments(filter),
-      Asset.find(filter, projection)
-        .populate('category', 'name allowedRoles downloadRoles')
-        .populate('department', 'name allowedRoles downloadRoles')
-        .sort(sort)
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-    ]);
-
-    const pageIds = assets.map((a) => a._id);
-    const myReqs = await AccessRequest.find({ requestedBy: req.user.id, status: 'Pending', asset: { $in: pageIds } }).select('asset').lean();
-    const pendingSet = new Set(myReqs.map((r) => String(r.asset)));
-
-    const shaped = assets.map((a) => {
-      a._deptAllowedRoles = a.department?.allowedRoles;
-      a._deptDownloadRoles = a.department?.downloadRoles;
-      return {
-        _id: a._id, filename: a.filename, keywords: a.keywords, type: a.type, fileType: a.fileType,
-        category: a.category ? { _id: a.category._id, name: a.category.name } : null,
-        department: a.department ? { _id: a.department._id, name: a.department.name } : null,
-        sensitivity: a.sensitivity, currentVersion: a.currentVersion,
-        size: a.versions?.[a.versions.length - 1]?.size || 0, updatedAt: a.updatedAt,
-        accessible: canView(req.user, a), canDownload: canDownload(req.user, a), requestPending: pendingSet.has(String(a._id)),
-      };
-    });
-    res.json({ assets: shaped, page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) });
-  } catch (err) { console.error('[ASSETS]', err.message); res.status(500).json({ error: 'Could not fetch assets.' }); }
-});
-
-app.post('/assets/upload', authenticate, authorize('Engineering', 'Legal', 'Management'), upload.single('file'), async (req, res) => {
-  const ip = clientIp(req);
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
-  const scan = scanFile(req.file.path, req.file.originalname);
-  if (!scan.ok) { fs.unlink(req.file.path, () => { }); await logAudit({ action: 'UPLOAD_BLOCKED', userId: req.user.id, ip, details: `${req.file.originalname}: ${scan.reason}`, severity: 'critical' }); return res.status(400).json({ error: `Upload rejected: ${scan.reason}` }); }
-  try {
-    const { filename, keywords, sensitivity, categoryId, departmentId, note, assetId } = req.body;
-    const enc = ingestUpload(req.file.path);
-    const fType = fileTypeLabel(req.file.originalname);
-    if (assetId) {
-      const asset = await Asset.findById(assetId);
-      if (!asset) { fs.unlink(enc.path, () => { }); return res.status(404).json({ error: 'Asset not found.' }); }
-      const nextV = asset.currentVersion + 1;
-      asset.versions.push({ version: nextV, path: enc.path, size: enc.size, hash: enc.hash, uploadedBy: req.user.id, note: note || `Version ${nextV}` });
-      asset.currentVersion = nextV;
-      await asset.save();
-      await logAudit({ action: 'VERSION_UPLOAD', userId: req.user.id, ip, details: `asset=${asset._id} v=${nextV}` });
-      return res.status(201).json({ message: 'New version uploaded.', asset });
-    }
-    if (!categoryId) { fs.unlink(enc.path, () => { }); return res.status(400).json({ error: 'A category is required.' }); }
-    const category = await Category.findById(categoryId);
-    if (!category) { fs.unlink(enc.path, () => { }); return res.status(400).json({ error: 'Selected category does not exist.' }); }
-    if (req.user.role !== 'Admin' && !category.allowedRoles.includes(req.user.role)) { fs.unlink(enc.path, () => { }); return res.status(403).json({ error: 'You cannot upload into this category.' }); }
-    let departmentRef = null;
-    if (departmentId) {
-      const dept = await Department.findById(departmentId);
-      if (!dept || String(dept.category) !== String(category._id)) { fs.unlink(enc.path, () => { }); return res.status(400).json({ error: 'Selected department does not belong to this category.' }); }
-      departmentRef = dept._id;
-    }
-    const asset = await Asset.create({
-      filename: filename || req.file.originalname, keywords: keywords || '', type: req.file.mimetype, fileType: fType || '',
-      category: category._id, department: departmentRef, sensitivity: SENSITIVITY.includes(sensitivity) ? sensitivity : 'Internal',
-      allowedRoles: category.allowedRoles, downloadRoles: category.downloadRoles || [],
-      currentVersion: 1, versions: [{ version: 1, path: enc.path, size: enc.size, hash: enc.hash, uploadedBy: req.user.id, note: note || 'Initial version' }],
-      uploadedBy: req.user.id,
-    });
-    await logAudit({ action: 'UPLOAD', userId: req.user.id, ip, details: `asset=${asset._id} file=${asset.filename} type=${fType}` });
-    res.status(201).json({ message: 'Upload successful.', asset });
-  } catch (err) { console.error('[UPLOAD]', err.message); res.status(500).json({ error: 'Upload failed.' }); }
-});
-
-app.post('/assets/bulk-upload', authenticate, authorize('Engineering', 'Legal', 'Management'), upload.array('files', 20), async (req, res) => {
-  const ip = clientIp(req);
-  if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No files uploaded.' });
-  const { categoryId, departmentId, sensitivity } = req.body;
-  try {
-    const category = await Category.findById(categoryId);
-    if (!category) return res.status(400).json({ error: 'Selected category does not exist.' });
-    if (req.user.role !== 'Admin' && !category.allowedRoles.includes(req.user.role)) return res.status(403).json({ error: 'You cannot upload into this category.' });
-    let departmentRef = null;
-    if (departmentId) { const dept = await Department.findById(departmentId); if (dept && String(dept.category) === String(category._id)) departmentRef = dept._id; }
-    const created = []; const skipped = [];
-    for (const f of req.files) {
-      const scan = scanFile(f.path, f.originalname);
-      if (!scan.ok) { fs.unlink(f.path, () => { }); skipped.push({ name: f.originalname, reason: scan.reason }); continue; }
-      const enc = ingestUpload(f.path);
-      const asset = await Asset.create({
-        filename: f.originalname, type: f.mimetype, fileType: fileTypeLabel(f.originalname) || '',
-        category: category._id, department: departmentRef, sensitivity: SENSITIVITY.includes(sensitivity) ? sensitivity : 'Internal',
-        allowedRoles: category.allowedRoles, downloadRoles: category.downloadRoles || [],
-        currentVersion: 1, versions: [{ version: 1, path: enc.path, size: enc.size, hash: enc.hash, uploadedBy: req.user.id, note: 'Initial version' }],
-        uploadedBy: req.user.id,
-      });
-      created.push(asset._id);
-    }
-    await logAudit({ action: 'BULK_UPLOAD', userId: req.user.id, ip, details: `created=${created.length} skipped=${skipped.length} category=${category.name}` });
-    res.status(201).json({ message: `Uploaded ${created.length} file(s).`, created: created.length, skipped });
-  } catch (err) { console.error('[BULK_UPLOAD]', err.message); res.status(500).json({ error: 'Bulk upload failed.' }); }
-});
-
-app.patch('/assets/:id', authenticate, authorize('Admin'), async (req, res) => {
-  const ip = clientIp(req);
-  const { filename, keywords, sensitivity, departmentId } = req.body || {};
-  try {
-    const asset = await Asset.findById(req.params.id);
-    if (!asset) return res.status(404).json({ error: 'Asset not found.' });
-    if (filename) asset.filename = filename;
-    if (keywords !== undefined) asset.keywords = keywords;
-    if (sensitivity && SENSITIVITY.includes(sensitivity)) asset.sensitivity = sensitivity;
-    if (departmentId !== undefined) {
-      if (departmentId === '' || departmentId === null) asset.department = null;
-      else { const dept = await Department.findById(departmentId); if (dept && String(dept.category) === String(asset.category)) asset.department = dept._id; }
-    }
-    await asset.save();
-    await logAudit({ action: 'ASSET_EDITED', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'warn' });
-    res.json({ message: 'Asset updated.', asset });
-  } catch (err) { console.error('[ASSET_EDIT]', err.message); res.status(500).json({ error: 'Could not update asset.' }); }
-});
-
-app.post('/assets/:id/move', authenticate, authorize('Admin'), async (req, res) => {
-  const ip = clientIp(req);
-  const { categoryId, departmentId, mode } = req.body || {};
-  try {
-    const asset = await Asset.findById(req.params.id);
-    if (!asset) return res.status(404).json({ error: 'Asset not found.' });
-    const category = await Category.findById(categoryId);
-    if (!category) return res.status(400).json({ error: 'Target category does not exist.' });
-    let deptRef = null;
-    if (departmentId) { const dept = await Department.findById(departmentId); if (dept && String(dept.category) === String(category._id)) deptRef = dept._id; }
-    if (mode === 'copy') {
-      const latest = asset.versions[asset.versions.length - 1];
-      const newPath = path.join(UPLOAD_DIR, `${Date.now()}_copy_${path.basename(latest.path)}`);
-      fs.copyFileSync(latest.path, newPath);
-      const copy = await Asset.create({
-        filename: asset.filename, keywords: asset.keywords, type: asset.type, fileType: asset.fileType,
-        category: category._id, department: deptRef, sensitivity: asset.sensitivity,
-        allowedRoles: category.allowedRoles, downloadRoles: category.downloadRoles || [],
-        currentVersion: 1, versions: [{ version: 1, path: newPath, size: latest.size, hash: latest.hash, uploadedBy: req.user.id, note: 'Copied' }],
-        uploadedBy: req.user.id,
-      });
-      await logAudit({ action: 'ASSET_COPIED', userId: req.user.id, ip, details: `from=${asset._id} to=${copy._id}`, severity: 'warn' });
-      return res.json({ message: 'Asset copied.', asset: copy });
-    }
-    asset.category = category._id; asset.department = deptRef;
-    asset.allowedRoles = category.allowedRoles; asset.downloadRoles = category.downloadRoles || [];
-    await asset.save();
-    await logAudit({ action: 'ASSET_MOVED', userId: req.user.id, ip, details: `asset=${asset._id} category=${category.name}`, severity: 'warn' });
-    res.json({ message: 'Asset moved.', asset });
-  } catch (err) { console.error('[ASSET_MOVE]', err.message); res.status(500).json({ error: 'Could not move/copy asset.' }); }
-});
-
-app.delete('/assets/:id', authenticate, authorize('Admin'), async (req, res) => {
-  const ip = clientIp(req);
-  try {
-    const asset = await Asset.findById(req.params.id);
-    if (!asset) return res.status(404).json({ error: 'Asset not found.' });
-    for (const v of asset.versions) { try { fs.unlinkSync(v.path); } catch { /* ignore */ } }
-    await Asset.deleteOne({ _id: asset._id });
-    await AccessRequest.deleteMany({ asset: asset._id });
-    await logAudit({ action: 'ASSET_DELETED', userId: req.user.id, ip, details: `asset=${asset._id} file=${asset.filename}`, severity: 'warn' });
-    res.json({ message: 'Asset deleted.' });
-  } catch (err) { console.error('[ASSET_DELETE]', err.message); res.status(500).json({ error: 'Could not delete asset.' }); }
-});
-
-app.post('/assets/:id/grant', authenticate, authorize('Admin'), async (req, res) => {
-  const ip = clientIp(req);
-  const { userId, kind, revoke } = req.body || {};
-  try {
-    const asset = await Asset.findById(req.params.id);
-    if (!asset) return res.status(404).json({ error: 'Asset not found.' });
-    const target = await User.findById(userId);
-    if (!target) return res.status(404).json({ error: 'User not found.' });
-    const listName = kind === 'download' ? 'userDownloadGrants' : 'userViewGrants';
-    const has = userGranted(asset[listName], userId);
-    if (revoke) asset[listName] = asset[listName].filter((id) => String(id) !== String(userId));
-    else if (!has) { asset[listName].push(userId); if (kind === 'download' && !userGranted(asset.userViewGrants, userId)) asset.userViewGrants.push(userId); }
-    await asset.save();
-    await logAudit({ action: revoke ? 'GRANT_REVOKED' : 'GRANT_ADDED', userId: req.user.id, ip, details: `asset=${asset._id} user=${target.email} kind=${kind || 'view'}`, severity: 'warn' });
-    if (!revoke) await notify(userId, `You were granted ${kind || 'view'} access to "${asset.filename}".`, '/');
-    res.json({ message: revoke ? 'Grant revoked.' : 'Grant added.' });
-  } catch (err) { console.error('[GRANT]', err.message); res.status(500).json({ error: 'Could not update grant.' }); }
-});
-
-app.get('/assets/:id/grants', authenticate, authorize('Admin'), async (req, res) => {
-  try {
-    const asset = await Asset.findById(req.params.id).populate('userViewGrants', 'name email role').populate('userDownloadGrants', 'name email role').lean();
-    if (!asset) return res.status(404).json({ error: 'Asset not found.' });
-    res.json({ viewGrants: asset.userViewGrants || [], downloadGrants: asset.userDownloadGrants || [] });
-  } catch { res.status(500).json({ error: 'Could not load grants.' }); }
-});
-
-app.get('/assets/:id/versions', authenticate, async (req, res) => {
-  try {
-    const asset = await Asset.findById(req.params.id).populate('versions.uploadedBy', 'name email').populate('department', 'allowedRoles downloadRoles').lean();
-    if (!asset) return res.status(404).json({ error: 'Asset not found.' });
-    asset._deptAllowedRoles = asset.department?.allowedRoles;
-    if (!canView(req.user, asset)) return res.status(403).json({ error: 'Forbidden.' });
-    res.json({ filename: asset.filename, versions: [...asset.versions].reverse() });
-  } catch { res.status(500).json({ error: 'Could not load versions.' }); }
-});
-
-app.get('/assets/:id/view', authenticate, async (req, res) => {
-  const ip = clientIp(req);
-  try {
-    const asset = await Asset.findById(req.params.id).populate('department', 'allowedRoles downloadRoles').lean();
-    if (!asset) return res.status(404).json({ error: 'Asset not found.' });
-    asset._deptAllowedRoles = asset.department?.allowedRoles;
-    asset._deptDownloadRoles = asset.department?.downloadRoles;
-    if (!canView(req.user, asset)) { await logAudit({ action: 'VIEW_DENIED', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'critical' }); return res.status(403).json({ error: 'Forbidden: not authorized to view this asset.' }); }
-    const latest = asset.versions[asset.versions.length - 1];
-    const ext = extOf(asset.filename);
-    const isPdf = ext === 'pdf';
-    const isImage = ['jpg', 'jpeg', 'png'].includes(ext);
-    const isConvertible = ['doc', 'docx'].includes(ext);
-    const previewable = isPdf || isImage || isConvertible;
-    const previewKind = isPdf ? 'pdf' : isImage ? 'image' : isConvertible ? 'pdf' : 'none';
-    await logAudit({ action: 'VIEW', userId: req.user.id, ip, details: `asset=${asset._id}` });
-    res.json({
-      message: 'Secure view session opened.',
-      watermark: `CONFIDENTIAL • ${req.user.email} • ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
-      previewable, previewKind,
-      canDownload: canDownload(req.user, asset),
-      asset: { id: asset._id, filename: asset.filename, type: asset.type, fileType: asset.fileType, sensitivity: asset.sensitivity, version: asset.currentVersion, hash: latest?.hash || '' },
-    });
-  } catch (err) { console.error('[VIEW]', err.message); res.status(500).json({ error: 'Could not open secure view.' }); }
-});
-
-app.get('/assets/:id/raw', authenticate, async (req, res) => {
-  const ip = clientIp(req);
-  try {
-    const asset = await Asset.findById(req.params.id).populate('department', 'allowedRoles downloadRoles').lean();
-    if (!asset) return res.status(404).json({ error: 'Asset not found.' });
-    asset._deptAllowedRoles = asset.department?.allowedRoles;
-    asset._deptDownloadRoles = asset.department?.downloadRoles;
-    if (!canView(req.user, asset)) { await logAudit({ action: 'VIEW_DENIED', userId: req.user.id, ip, details: `asset=${asset._id} (raw)`, severity: 'critical' }); return res.status(403).json({ error: 'Forbidden.' }); }
-    const latest = asset.versions[asset.versions.length - 1];
-    if (!latest || !fs.existsSync(latest.path)) return res.status(404).json({ error: 'File data not found.' });
-    const wantsDownload = req.query.download === '1' || req.query.download === 'true';
-    const ext = extOf(asset.filename);
-    const wmText = `${req.user.email}  ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`;
-
-    let plain;
-    try { plain = readEncrypted(latest.path); }
-    catch { await logAudit({ action: 'DECRYPT_FAILED', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'critical' }); return res.status(500).json({ error: 'File could not be decrypted (it may be corrupted or tampered with).' }); }
-
-    if (wantsDownload) {
-      if (!canDownload(req.user, asset)) { await logAudit({ action: 'DOWNLOAD_DENIED', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'critical' }); return res.status(403).json({ error: 'Your role is not permitted to download this file.' }); }
-      await logAudit({ action: 'DOWNLOAD', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'warn' });
-      res.setHeader('Content-Type', asset.type || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(asset.filename)}"`);
-      return res.end(plain);
-    }
-
-    await logAudit({ action: 'VIEW_STREAM', userId: req.user.id, ip, details: `asset=${asset._id}` });
-    res.setHeader('Cache-Control', 'private, no-store');
-
-    if (ext === 'pdf') {
-      const bytes = await watermarkPdfBuffer(plain, wmText);
-      res.setHeader('Content-Type', 'application/pdf'); res.setHeader('Content-Disposition', 'inline');
-      return res.end(Buffer.from(bytes));
-    }
-    if (['jpg', 'jpeg', 'png'].includes(ext)) {
-      const buf = await watermarkImageBuffer(plain, wmText);
-      res.setHeader('Content-Type', 'image/png'); res.setHeader('Content-Disposition', 'inline');
-      return res.end(buf);
-    }
-    if (['doc', 'docx'].includes(ext)) {
-      try {
-        const pdfBuf = await convertToPdf(plain, ext);
-        const bytes = await watermarkPdfBuffer(pdfBuf, wmText);
-        res.setHeader('Content-Type', 'application/pdf'); res.setHeader('Content-Disposition', 'inline');
-        return res.end(Buffer.from(bytes));
-      } catch (e) {
-        console.error('[CONVERT]', e.message);
-        return res.status(422).json({ error: 'This document could not be converted for preview. You may still download it if permitted.' });
-      }
-    }
-    return res.status(415).json({ error: 'This file type cannot be previewed inline.' });
-  } catch (err) { console.error('[RAW]', err.message); if (!res.headersSent) res.status(500).json({ error: 'Could not stream file.' }); }
-});
-
+app.use('/', require('./routes/authRoutes'));
+app.use('/', require('./routes/userRoutes'));
+app.use('/', require('./routes/categoryRoutes'));
 async function watermarkPdfBuffer(src, text) {
   const pdf = await PDFDocument.load(src, { ignoreEncryption: true });
   const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -730,65 +287,7 @@ app.post('/notifications/read', authenticate, async (req, res) => {
   catch { res.status(500).json({ error: 'Could not update notifications.' }); }
 });
 
-// ================================================================ CATEGORIES
-app.get('/categories', authenticate, async (req, res) => {
-  try {
-    const categories = await Category.find({}).sort({ name: 1 }).lean();
-    const departments = await Department.find({}).sort({ name: 1 }).lean();
-    const shaped = categories.map((c) => ({
-      _id: c._id, name: c.name, allowedRoles: c.allowedRoles, downloadRoles: c.downloadRoles || [],
-      accessible: req.user.role === 'Admin' || (c.allowedRoles || []).includes(req.user.role),
-      departments: departments.filter((d) => String(d.category) === String(c._id)).map((d) => ({ _id: d._id, name: d.name, allowedRoles: d.allowedRoles || [], downloadRoles: d.downloadRoles || [] })),
-    }));
-    res.json({ categories: shaped });
-  } catch (err) { console.error('[CATEGORIES]', err.message); res.status(500).json({ error: 'Could not load categories.' }); }
-});
 
-app.post('/categories', authenticate, authorize('Admin'), async (req, res) => {
-  const ip = clientIp(req);
-  const { name, allowedRoles, downloadRoles } = req.body || {};
-  if (!name || !name.trim()) return res.status(400).json({ error: 'Category name is required.' });
-  const roles = Array.isArray(allowedRoles) ? allowedRoles.filter((r) => ROLES.includes(r)) : [];
-  if (roles.length === 0) return res.status(400).json({ error: 'Select at least one role for view access.' });
-  const dlRoles = Array.isArray(downloadRoles) ? downloadRoles.filter((r) => roles.includes(r)) : [];
-  try {
-    if (await Category.findOne({ name: name.trim() })) return res.status(409).json({ error: 'A category with that name already exists.' });
-    const cat = await Category.create({ name: name.trim(), allowedRoles: roles, downloadRoles: dlRoles, createdBy: req.user.id });
-    await logAudit({ action: 'CATEGORY_CREATED', userId: req.user.id, ip, details: `name=${cat.name}`, severity: 'warn' });
-    res.status(201).json({ message: 'Category created.', category: cat });
-  } catch (err) { console.error('[CATEGORY_CREATE]', err.message); res.status(500).json({ error: 'Could not create category.' }); }
-});
-
-app.patch('/categories/:id', authenticate, authorize('Admin'), async (req, res) => {
-  const ip = clientIp(req);
-  const { allowedRoles, downloadRoles } = req.body || {};
-  try {
-    const cat = await Category.findById(req.params.id);
-    if (!cat) return res.status(404).json({ error: 'Category not found.' });
-    const roles = Array.isArray(allowedRoles) ? allowedRoles.filter((r) => ROLES.includes(r)) : cat.allowedRoles;
-    if (roles.length === 0) return res.status(400).json({ error: 'Select at least one role for view access.' });
-    const dlSource = Array.isArray(downloadRoles) ? downloadRoles : (cat.downloadRoles || []);
-    const dlRoles = dlSource.filter((r) => roles.includes(r));
-    cat.allowedRoles = roles; cat.downloadRoles = dlRoles;
-    await cat.save();
-    await Asset.updateMany({ category: cat._id }, { allowedRoles: roles, downloadRoles: dlRoles });
-    await logAudit({ action: 'CATEGORY_UPDATED', userId: req.user.id, ip, details: `name=${cat.name}`, severity: 'warn' });
-    res.json({ message: 'Category updated.', category: cat });
-  } catch (err) { console.error('[CATEGORY_UPDATE]', err.message); res.status(500).json({ error: 'Could not update category.' }); }
-});
-
-app.delete('/categories/:id', authenticate, authorize('Admin'), async (req, res) => {
-  const ip = clientIp(req);
-  try {
-    const cat = await Category.findById(req.params.id);
-    if (!cat) return res.status(404).json({ error: 'Category not found.' });
-    if (await Asset.countDocuments({ category: cat._id }) > 0) return res.status(409).json({ error: 'Cannot delete: assets still use this category.' });
-    await Department.deleteMany({ category: cat._id });
-    await Category.deleteOne({ _id: cat._id });
-    await logAudit({ action: 'CATEGORY_DELETED', userId: req.user.id, ip, details: `name=${cat.name}`, severity: 'warn' });
-    res.json({ message: 'Category deleted.' });
-  } catch (err) { console.error('[CATEGORY_DELETE]', err.message); res.status(500).json({ error: 'Could not delete category.' }); }
-});
 
 app.post('/departments', authenticate, authorize('Admin'), async (req, res) => {
   const ip = clientIp(req);
@@ -835,22 +334,7 @@ app.delete('/departments/:id', authenticate, authorize('Admin'), async (req, res
   } catch (err) { console.error('[DEPARTMENT_DELETE]', err.message); res.status(500).json({ error: 'Could not delete department.' }); }
 });
 
-// ================================================================ AUDIT + USERS
-app.get('/audit', authenticate, authorize('Admin'), async (req, res) => {
-  try {
-    const { severity, action } = req.query;
-    const q = {};
-    if (severity) q.severity = severity;
-    if (action) q.action = new RegExp(action, 'i');
-    const logs = await AuditLog.find(q).sort({ timestamp: -1 }).limit(300).populate('userId', 'name email role').lean();
-    res.json({ logs });
-  } catch { res.status(500).json({ error: 'Could not fetch audit logs.' }); }
-});
 
-app.get('/users', authenticate, authorize('Admin'), async (req, res) => {
-  const users = await User.find({}).select('-password').sort({ createdAt: 1 }).lean();
-  res.json({ users });
-});
 
 function generateTempPassword() {
   const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ', lower = 'abcdefghijkmnopqrstuvwxyz', digits = '23456789', symbols = '@#$%&*';
