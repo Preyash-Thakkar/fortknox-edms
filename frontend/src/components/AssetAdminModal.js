@@ -127,7 +127,9 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
   const saveEdit = async () => {
     try {
       await api.patch(`/assets/${asset._id}`, { filename, keywords, sensitivity });
-      flash('Saved.'); onChanged();
+      flash('Saved.');
+      onChanged();
+      onClose();
     } catch (e) { flash(e.response?.data?.error || 'Save failed.', true); }
   };
 

@@ -91,15 +91,24 @@ function scanFile(filepath, originalName) {
     return { ok: true };
 }
 
-async function watermarkPdfBuffer(src, text) {
-    const pdf = await PDFDocument.load(src, { ignoreEncryption: true });
-    const font = await pdf.embedFont(StandardFonts.Helvetica);
-    for (const page of pdf.getPages()) {
+async function watermarkPdfBuffer(pdfBuffer, watermarkText) {
+    const { PDFDocument, rgb, degrees } = require('pdf-lib');
+    const pdfDoc = await PDFDocument.load(pdfBuffer);
+    const pages = pdfDoc.getPages();
+
+    for (const page of pages) {
         const { width, height } = page.getSize();
-        for (let y = 0; y < height + 200; y += 160) for (let x = -100; x < width; x += 260)
-            page.drawText(text, { x, y, size: 12, font, color: rgb(0.5, 0.5, 0.5), opacity: 0.18, rotate: degrees(30) });
+        // Single clean diagonal watermark
+        page.drawText(watermarkText, {
+            x: width / 6,
+            y: height / 3,
+            size: 18,
+            color: rgb(0.75, 0.75, 0.75),
+            opacity: 0.25,
+            rotate: degrees(30),
+        });
     }
-    return pdf.save();
+    return await pdfDoc.save();
 }
 
 async function watermarkImageBuffer(srcBuf, text) {

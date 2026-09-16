@@ -2,25 +2,40 @@ function userGranted(list, userId) {
     return (list || []).some((id) => String(id) === String(userId));
 }
 
-function roleViewOk(user, asset) {
-    if (user.role === 'Admin') return true;
-    const catOk = (asset.allowedRoles || []).includes(user.role);
-    const deptRoles = asset._deptAllowedRoles;
-    const deptOk = !deptRoles || deptRoles.length === 0 || deptRoles.includes(user.role);
-    return catOk && deptOk;
-}
-
 function canView(user, asset) {
-    return user.role === 'Admin' || roleViewOk(user, asset) || userGranted(asset.userViewGrants, user.id);
+    // 1. System Admins get universal access
+    if (user.role === 'Admin') return true;
+
+    // 2. The specific Department Head for this asset gets automatic access
+    if (user.role === 'Management' && user.headOfDepartments?.includes(asset.departmentName)) {
+        return true;
+    }
+
+    // 3. Explicit individual grant check (if they requested and were approved)
+    const uid = String(user.id || user._id);
+    const viewGrants = (asset.userViewGrants || []).map(id => String(id));
+    if (viewGrants.includes(uid)) return true;
+
+    // DEFAULT DENY: Everyone else (including Team Members) is locked out and must request access
+    return false;
 }
 
 function canDownload(user, asset) {
+    // 1. System Admins get universal access
     if (user.role === 'Admin') return true;
-    const roleDl = (asset.downloadRoles || []).includes(user.role);
-    const deptDl = asset._deptDownloadRoles;
-    const deptDlOk = !deptDl || deptDl.length === 0 || deptDl.includes(user.role);
-    const roleOk = roleViewOk(user, asset) && roleDl && deptDlOk;
-    return roleOk || userGranted(asset.userDownloadGrants, user.id);
+
+    // 2. The specific Department Head for this asset gets automatic access
+    if (user.role === 'Management' && user.headOfDepartments?.includes(asset.departmentName)) {
+        return true;
+    }
+
+    // 3. Explicit individual grant check
+    const uid = String(user.id || user._id);
+    const downloadGrants = (asset.userDownloadGrants || []).map(id => String(id));
+    if (downloadGrants.includes(uid)) return true;
+
+    // DEFAULT DENY
+    return false;
 }
 
 module.exports = { canView, canDownload, userGranted };

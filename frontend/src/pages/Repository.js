@@ -9,6 +9,7 @@ import SecureViewer from '../components/SecureViewer';
 import UploadModal from '../components/UploadModal';
 import VersionDrawer from '../components/VersionDrawer';
 import AssetAdminModal from '../components/AssetAdminModal';
+import RequestModal from '../components/RequestModal';
 
 export default function Repository() {
   const { categoryId } = useParams();
@@ -28,6 +29,7 @@ export default function Repository() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
+  const [requestingAsset, setRequestingAsset] = useState(null);
   const PAGE_SIZE = 25;
 
   const category = categories.find((c) => c._id === categoryId);
@@ -84,17 +86,8 @@ export default function Repository() {
     }
   };
 
-  const requestAccess = async (id) => {
-    const reason = window.prompt('Reason for access request:') || '';
-    if (reason === null) return;
-    const wantDownload = window.confirm('Request DOWNLOAD access? Click Cancel for view-only access.');
-    try {
-      await api.post('/access-requests', { assetId: id, reason, kind: wantDownload ? 'download' : 'view' });
-      setMsg('Access request submitted.');
-      load();
-    } catch (err) {
-      setMsg(err.response?.data?.error || 'Request failed.');
-    }
+  const requestAccess = (asset) => {
+    setRequestingAsset(asset);
   };
 
   const title = category ? category.name : 'Repository';
@@ -131,9 +124,8 @@ export default function Repository() {
           <span className="font-label-lg text-label-lg text-on-surface-variant uppercase tracking-widest">Department</span>
           <button
             onClick={() => setDeptFilter('')}
-            className={`px-3 py-1.5 rounded text-label-lg font-bold border transition-all ${
-              deptFilter === '' ? 'bg-primary text-on-primary border-primary' : 'border-outline-variant text-on-surface-variant hover:border-primary'
-            }`}
+            className={`px-3 py-1.5 rounded text-label-lg font-bold border transition-all ${deptFilter === '' ? 'bg-primary text-on-primary border-primary' : 'border-outline-variant text-on-surface-variant hover:border-primary'
+              }`}
           >
             All
           </button>
@@ -141,9 +133,8 @@ export default function Repository() {
             <button
               key={d._id}
               onClick={() => setDeptFilter(d._id)}
-              className={`px-3 py-1.5 rounded text-label-lg font-bold border transition-all ${
-                deptFilter === d._id ? 'bg-primary text-on-primary border-primary' : 'border-outline-variant text-on-surface-variant hover:border-primary'
-              }`}
+              className={`px-3 py-1.5 rounded text-label-lg font-bold border transition-all ${deptFilter === d._id ? 'bg-primary text-on-primary border-primary' : 'border-outline-variant text-on-surface-variant hover:border-primary'
+                }`}
             >
               {d.name}
             </button>
@@ -180,9 +171,8 @@ export default function Repository() {
             {assets.map((a, idx) => (
               <div
                 key={a._id}
-                className={`grid grid-cols-12 gap-gutter px-md py-3 items-center group transition-colors hover:bg-surface-container ${
-                  idx % 2 ? 'bg-surface-container-low/40' : ''
-                }`}
+                className={`grid grid-cols-12 gap-gutter px-md py-3 items-center group transition-colors hover:bg-surface-container ${idx % 2 ? 'bg-surface-container-low/40' : ''
+                  }`}
               >
                 <div className="col-span-4 flex items-center gap-3 min-w-0">
                   <FileTypeIcon filename={a.filename} type={a.type} />
@@ -232,7 +222,9 @@ export default function Repository() {
                     </button>
                   )}
                   {!a.accessible && !a.requestPending && (
-                    <Button variant="secondary" icon="key" onClick={() => requestAccess(a._id)} className="!py-1 !px-3">Request</Button>
+                    <button onClick={() => requestAccess(a)} className="border px-3 py-1 rounded text-sm hover:bg-gray-100 flex items-center gap-1">
+                      <Icon name="key" /> Request
+                    </button>
                   )}
                   {user.role === 'Admin' && (
                     <button title="Manage (admin)" onClick={() => setAdminAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-on-surface-variant">
@@ -275,6 +267,17 @@ export default function Repository() {
           categories={categories}
           onClose={() => setAdminAsset(null)}
           onChanged={() => { load(); }}
+        />
+      )}
+      {/* --- CUSTOM REQUEST MODAL --- */}
+      {requestingAsset && (
+        <RequestModal
+          asset={requestingAsset}
+          onClose={() => setRequestingAsset(null)}
+          onSuccess={() => {
+            setMsg('Access request submitted successfully.');
+            load(); // This reloads your asset list
+          }}
         />
       )}
     </>

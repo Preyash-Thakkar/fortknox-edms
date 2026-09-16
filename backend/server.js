@@ -17,8 +17,20 @@ const allowedOrigins = [
   'http://192.168.29.254:3000',
   'https://lms1.wehear.in'
 ];
+
 // ---------------------------------------------------------------- Middleware
-app.use(cors({ origin: process.env.CLIENT_ORIGIN, credentials: true }));
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true
+}));
+
 app.use(express.json());
 app.use(cookieParser());
 
@@ -29,6 +41,7 @@ app.use('/', require('./routes/categoryRoutes'));
 app.use('/', require('./routes/assetRoutes'));
 app.use('/', require('./routes/requestRoutes'));
 app.use('/', require('./routes/auditRoutes'));
+
 // Health Check Route
 app.get('/', (req, res) => res.json({ service: 'Fort Knox EDMS API', status: 'ok', version: 2 }));
 
@@ -38,10 +51,9 @@ app.use((err, req, res, next) => {
   next();
 });
 
-// ---------------------------------------------------------------- Execute Seed & Listen
+// ---------------------------------------------------------------- Execute Listen (Seed Removed)
 mongoose.connection.once('open', async () => {
-  const seed = require('./utils/seed');
-  await seed();
+  // THE LEGACY SEED SCRIPT HAS BEEN COMPLETELY REMOVED FROM HERE
 
   if (require.main === module) {
     app.listen(PORT, () => console.log(`[API] Fort Knox EDMS v2 running on http://localhost:${PORT}`));
