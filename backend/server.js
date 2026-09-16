@@ -1,16 +1,3 @@
-/**
- * Fort Knox EDMS - Secure Enterprise Data System (v2)
- * Single-file Express backend.
- *
- * Adds: email+password login (MFA removed), JWT in httpOnly cookie,
- * forced first-login + profile password change, login rate limiting,
- * upload type allow-list + malware scan, admin delete/edit/bulk/move-copy,
- * per-user grants + department permissions, in-app + email notifications,
- * search, and server-side watermarking for PDF + image.
- */
-
-
-
 const express = require('express');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
@@ -27,37 +14,31 @@ const { execFile } = require('child_process');
 const nodemailer = require('nodemailer');
 const { PDFDocument, rgb, degrees, StandardFonts } = require('pdf-lib');
 const sharp = require('sharp');
-const dotenv = require('dotenv');
 require('dotenv').config();
+
+// Execute Database Connection
+const connectDB = require('./config/db');
+connectDB();
+
 const app = express();
 
 // ---------------------------------------------------------------- Config
 const PORT = process.env.PORT || 8007;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_only_secret_change_me';
 const JWT_EXPIRES = process.env.JWT_EXPIRES || '8h';
-const MONGO_URI = 'mongodb+srv://rudren202:DocumentAccessControl@cluster0.lbnevmr.mongodb.net/?appName=Cluster0';
-// const MONGO_URI = 'mongodb://127.0.0.1:27017/fortknox';
 const CLIENT_ORIGIN = 'https://lms1.wehear.in';
-// const CLIENT_ORIGIN = 'http://localhost:3000';
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
 const PASSWORD_MIN = 8;
 
 // --- Encryption-at-rest config ---
-// Files are encrypted with AES-256-GCM before being written to disk, so anyone
-// with only disk/backup/credential access cannot read the stored documents.
-// The key comes from FILE_ENCRYPTION_KEY (64 hex chars = 32 bytes). In dev, a
-// fixed fallback is used so the demo runs; PRODUCTION MUST set a real key.
-// Upgrade path: source this key from a KMS/Vault (AWS KMS, HashiCorp Vault) and
-// use envelope encryption per file — see TESTING.md / SECURITY.
 const FILE_ENC_KEY = (() => {
-  const hex = "2031047ae20df3a6fc170b8f4a42bf43421f3af8e24e8080f955feeffea48a68";
+  const hex = process.env.FILE_ENCRYPTION_KEY;
   if (hex && /^[0-9a-fA-F]{64}$/.test(hex)) return Buffer.from(hex, 'hex');
   if (process.env.NODE_ENV === 'production') {
     console.error('[SECURITY] FILE_ENCRYPTION_KEY is missing or invalid (need 64 hex chars). Refusing to start in production.');
     process.exit(1);
   }
   console.warn('[SECURITY] Using a DEV-ONLY file encryption key. Set FILE_ENCRYPTION_KEY (64 hex chars) in production.');
-  // Deterministic dev key (NOT for production).
   return crypto.createHash('sha256').update('fortknox-dev-file-key').digest();
 })();
 
@@ -84,17 +65,10 @@ app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
 app.use(express.json());
 app.use(cookieParser());
 
-// Storage location for encrypted files. Override with VAULT_DIR to place it
-// OUTSIDE the app/web root (recommended) so it is never reachable as a static
-// path. Files here are AES-256-GCM encrypted; OS permissions are additionally
-// locked to the server's user (0700 dir / 0600 files) as defence in depth.
 const UPLOAD_DIR = process.env.VAULT_DIR || path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true, mode: 0o700 });
 try { fs.chmodSync(UPLOAD_DIR, 0o700); } catch { /* non-POSIX fs: ignore */ }
 
-// Multer writes the incoming (plaintext) file here briefly; ingestUpload then
-// scans it, encrypts it into UPLOAD_DIR, and deletes this temp copy. Keeping it
-// separate means plaintext never lands in the encrypted vault directory.
 const TEMP_DIR = process.env.VAULT_TEMP_DIR || path.join(os.tmpdir(), 'fk-uploads');
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true, mode: 0o700 });
 try { fs.chmodSync(TEMP_DIR, 0o700); } catch { /* ignore */ }
@@ -116,112 +90,14 @@ async function sendEmail(to, subject, text) {
   catch (err) { console.error('[EMAIL] send failed:', err.message); }
 }
 
-// ---------------------------------------------------------------- Schemas
-const userSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-  password: { type: String, required: true },
-  role: { type: String, enum: ROLES, required: true },
-  title: { type: String, default: '' },
-  active: { type: Boolean, default: true },
-  mustChangePassword: { type: Boolean, default: false },
-}, { timestamps: true });
-
-const versionSchema = new mongoose.Schema({
-  version: { type: Number, required: true },
-  path: { type: String, required: true },
-  size: { type: Number, default: 0 },
-  hash: { type: String, default: '' },
-  uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  uploadedAt: { type: Date, default: Date.now },
-  note: { type: String, default: '' },
-}, { _id: false });
-
-const categorySchema = new mongoose.Schema({
-  name: { type: String, required: true, unique: true, trim: true },
-  allowedRoles: [{ type: String, enum: ROLES }],
-  downloadRoles: [{ type: String, enum: ROLES }],
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-}, { timestamps: true });
-
-const departmentSchema = new mongoose.Schema({
-  name: { type: String, required: true, trim: true },
-  category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true },
-  allowedRoles: [{ type: String, enum: ROLES }],   // empty => inherit category
-  downloadRoles: [{ type: String, enum: ROLES }],  // empty => inherit category
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-}, { timestamps: true });
-departmentSchema.index({ name: 1, category: 1 }, { unique: true });
-
-const assetSchema = new mongoose.Schema({
-  filename: { type: String, required: true },
-  keywords: { type: String, default: '' },
-  type: { type: String, default: '' },
-  fileType: { type: String, default: '' },
-  category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
-  department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
-  sensitivity: { type: String, enum: SENSITIVITY, default: 'Internal' },
-  allowedRoles: [{ type: String, enum: ROLES }],
-  downloadRoles: [{ type: String, enum: ROLES }],
-  userViewGrants: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-  userDownloadGrants: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-  currentVersion: { type: Number, default: 1 },
-  versions: [versionSchema],
-  uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-}, { timestamps: true });
-// Indexes for the hot query paths.
-// Listing/filtering by category (+ department), newest first:
-assetSchema.index({ category: 1, department: 1, updatedAt: -1 });
-assetSchema.index({ updatedAt: -1 });
-// Permission-scoped queries (used to count/accessible-filter without scanning):
-assetSchema.index({ allowedRoles: 1 });
-assetSchema.index({ userViewGrants: 1 });
-// Full-text search over name + keywords (replaces unindexed regex scan):
-assetSchema.index({ filename: 'text', keywords: 'text' }, { weights: { filename: 5, keywords: 1 }, name: 'asset_text' });
-
-const accessRequestSchema = new mongoose.Schema({
-  asset: { type: mongoose.Schema.Types.ObjectId, ref: 'Asset', required: true },
-  requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  kind: { type: String, enum: ['view', 'download'], default: 'view' },
-  reason: { type: String, default: '' },
-  status: { type: String, enum: ['Pending', 'Approved', 'Denied'], default: 'Pending' },
-  decidedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  decidedAt: { type: Date },
-}, { timestamps: true });
-accessRequestSchema.index({ requestedBy: 1, status: 1 });
-accessRequestSchema.index({ status: 1, createdAt: -1 });
-accessRequestSchema.index({ asset: 1 });
-
-const notificationSchema = new mongoose.Schema({
-  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  text: { type: String, required: true },
-  link: { type: String, default: '' },
-  read: { type: Boolean, default: false },
-}, { timestamps: true });
-notificationSchema.index({ user: 1, read: 1, createdAt: -1 });
-
-const auditLogSchema = new mongoose.Schema({
-  action: { type: String, required: true },
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  ip: { type: String },
-  timestamp: { type: Date, default: Date.now },
-  severity: { type: String, enum: ['info', 'warn', 'critical'], default: 'info' },
-  details: { type: String },
-}, { timestamps: false });
-auditLogSchema.index({ timestamp: -1 });
-auditLogSchema.index({ severity: 1, timestamp: -1 });
-auditLogSchema.index({ userId: 1, timestamp: -1 });
-const blockMutation = (next) => next(new Error('AuditLog records are immutable.'));
-['findOneAndUpdate', 'updateOne', 'updateMany', 'deleteOne', 'deleteMany', 'findOneAndDelete', 'remove'].forEach((op) => auditLogSchema.pre(op, blockMutation));
-auditLogSchema.pre('save', function (next) { if (!this.isNew) return next(new Error('AuditLog records are immutable.')); next(); });
-
-const User = mongoose.model('User', userSchema);
-const Asset = mongoose.model('Asset', assetSchema);
-const Category = mongoose.model('Category', categorySchema);
-const Department = mongoose.model('Department', departmentSchema);
-const AccessRequest = mongoose.model('AccessRequest', accessRequestSchema);
-const Notification = mongoose.model('Notification', notificationSchema);
-const AuditLog = mongoose.model('AuditLog', auditLogSchema);
+// ---------------------------------------------------------------- Models
+const User = require('./models/User');
+const Asset = require('./models/Asset');
+const Category = require('./models/Category');
+const Department = require('./models/Department');
+const AccessRequest = require('./models/AccessRequest');
+const Notification = require('./models/Notification');
+const AuditLog = require('./models/AuditLog');
 
 // ---------------------------------------------------------------- Helpers
 async function logAudit({ action, userId = null, ip = '', details = '', severity = 'info' }) {
@@ -231,12 +107,9 @@ async function logAudit({ action, userId = null, ip = '', details = '', severity
 function clientIp(req) {
   return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
 }
-function sha256File(filepath) { return crypto.createHash('sha256').update(fs.readFileSync(filepath)).digest('hex'); }
 function sha256Buffer(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
 
 // --- Encryption at rest (AES-256-GCM) ---
-// On-disk format: [12-byte IV][16-byte auth tag][ciphertext]. The plaintext
-// never persists; readEncrypted() returns the decrypted bytes in memory only.
 const ENC_ALGO = 'aes-256-gcm';
 function encryptBufferToFile(plainBuf, destPath) {
   const iv = crypto.randomBytes(12);
@@ -252,18 +125,15 @@ function readEncrypted(filePath) {
   const tag = raw.subarray(12, 28);
   const data = raw.subarray(28);
   const decipher = crypto.createDecipheriv(ENC_ALGO, FILE_ENC_KEY, iv);
-  decipher.setAuthTag(tag); // GCM verifies integrity: tampered files throw here
+  decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(data), decipher.final()]);
 }
-// Encrypt a multer temp upload into the vault and remove the plaintext temp.
-// Returns { path, size, hash } describing the ENCRYPTED file (hash is of plaintext).
 function ingestUpload(tempPath) {
   const plain = fs.readFileSync(tempPath);
   const hash = sha256Buffer(plain);
-  // Write the encrypted file into the vault dir (NOT next to the plaintext temp).
   const encPath = path.join(UPLOAD_DIR, `${Date.now()}_${crypto.randomBytes(6).toString('hex')}.enc`);
   encryptBufferToFile(plain, encPath);
-  fs.unlinkSync(tempPath); // delete the plaintext temp immediately
+  fs.unlinkSync(tempPath);
   return { path: encPath, size: plain.length, hash };
 }
 async function notify(userId, text, link = '') {
@@ -309,7 +179,7 @@ function scanFile(filepath, originalName) {
   return { ok: true };
 }
 
-// ---------------------------------------------------------------- Auth
+// ---------------------------------------------------------------- Auth Middleware
 function authenticate(req, res, next) {
   const token = req.cookies?.fk_token || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
   if (!token) return res.status(401).json({ error: 'Not authenticated.' });
@@ -331,7 +201,7 @@ function setAuthCookie(res, user) {
   res.cookie('fk_token', token, { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'lax', maxAge: 8 * 60 * 60 * 1000 });
 }
 
-// ---------------------------------------------------------------- Multer
+// ---------------------------------------------------------------- Multer Config
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, TEMP_DIR),
   filename: (req, file, cb) => { const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_'); cb(null, `${Date.now()}_${Math.round(Math.random() * 1e6)}_${safe}`); },
@@ -406,9 +276,6 @@ app.get('/stats', authenticate, async (req, res) => {
 
     let accessible = totalAssets;
     if (!isAdmin) {
-      // Compute the accessible count inside MongoDB (no full scan into Node).
-      // Accessible = (role allowed by category AND not excluded by a department
-      // restriction) OR the user holds a per-user view grant.
       const role = req.user.role;
       const uid = new mongoose.Types.ObjectId(req.user.id);
       const result = await Asset.aggregate([
@@ -429,14 +296,13 @@ app.get('/stats', authenticate, async (req, res) => {
           $match: {
             $or: [
               {
-                // role permitted by the category AND department doesn't exclude it
                 allowedRoles: role,
                 $or: [
-                  { _deptAllowed: { $size: 0 } }, // department inherits category
-                  { _deptAllowed: role },          // department explicitly allows role
+                  { _deptAllowed: { $size: 0 } },
+                  { _deptAllowed: role },
                 ],
               },
-              { userViewGrants: uid }, // explicit per-user grant
+              { userViewGrants: uid },
             ],
           },
         },
@@ -452,7 +318,6 @@ app.get('/stats', authenticate, async (req, res) => {
 app.get('/assets', authenticate, async (req, res) => {
   try {
     const { category, department, q } = req.query;
-    // Pagination: page (1-based) + limit (capped to protect the server).
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
     const skip = (page - 1) * limit;
@@ -464,9 +329,6 @@ app.get('/assets', authenticate, async (req, res) => {
     let useTextScore = false;
     if (q && q.trim()) {
       const term = q.trim();
-      // Prefer the text index for multi-character/word queries. For very short
-      // fragments (1-2 chars) text search returns nothing useful, so fall back
-      // to an anchored regex on filename (still selective on the index prefix).
       if (term.length >= 3) {
         filter.$text = { $search: term };
         useTextScore = true;
@@ -479,7 +341,6 @@ app.get('/assets', authenticate, async (req, res) => {
     const projection = useTextScore ? { score: { $meta: 'textScore' } } : {};
     const sort = useTextScore ? { score: { $meta: 'textScore' } } : { updatedAt: -1 };
 
-    // Count + page fetched in parallel; both use indexes now.
     const [total, assets] = await Promise.all([
       Asset.countDocuments(filter),
       Asset.find(filter, projection)
@@ -491,7 +352,6 @@ app.get('/assets', authenticate, async (req, res) => {
         .lean(),
     ]);
 
-    // Only need pending-request flags for the assets on this page.
     const pageIds = assets.map((a) => a._id);
     const myReqs = await AccessRequest.find({ requestedBy: req.user.id, status: 'Pending', asset: { $in: pageIds } }).select('asset').lean();
     const pendingSet = new Set(myReqs.map((r) => String(r.asset)));
@@ -519,8 +379,7 @@ app.post('/assets/upload', authenticate, authorize('Engineering', 'Legal', 'Mana
   if (!scan.ok) { fs.unlink(req.file.path, () => { }); await logAudit({ action: 'UPLOAD_BLOCKED', userId: req.user.id, ip, details: `${req.file.originalname}: ${scan.reason}`, severity: 'critical' }); return res.status(400).json({ error: `Upload rejected: ${scan.reason}` }); }
   try {
     const { filename, keywords, sensitivity, categoryId, departmentId, note, assetId } = req.body;
-    // Scan happened on the plaintext temp; now encrypt it into the vault.
-    const enc = ingestUpload(req.file.path); // { path(.enc), size, hash } and removes the temp
+    const enc = ingestUpload(req.file.path);
     const fType = fileTypeLabel(req.file.originalname);
     if (assetId) {
       const asset = await Asset.findById(assetId);
@@ -568,7 +427,7 @@ app.post('/assets/bulk-upload', authenticate, authorize('Engineering', 'Legal', 
     for (const f of req.files) {
       const scan = scanFile(f.path, f.originalname);
       if (!scan.ok) { fs.unlink(f.path, () => { }); skipped.push({ name: f.originalname, reason: scan.reason }); continue; }
-      const enc = ingestUpload(f.path); // encrypt + remove plaintext temp
+      const enc = ingestUpload(f.path);
       const asset = await Asset.create({
         filename: f.originalname, type: f.mimetype, fileType: fileTypeLabel(f.originalname) || '',
         category: category._id, department: departmentRef, sensitivity: SENSITIVITY.includes(sensitivity) ? sensitivity : 'Internal',
@@ -696,7 +555,7 @@ app.get('/assets/:id/view', authenticate, async (req, res) => {
     const ext = extOf(asset.filename);
     const isPdf = ext === 'pdf';
     const isImage = ['jpg', 'jpeg', 'png'].includes(ext);
-    const isConvertible = ['doc', 'docx'].includes(ext); // rendered to a PDF preview server-side
+    const isConvertible = ['doc', 'docx'].includes(ext);
     const previewable = isPdf || isImage || isConvertible;
     const previewKind = isPdf ? 'pdf' : isImage ? 'image' : isConvertible ? 'pdf' : 'none';
     await logAudit({ action: 'VIEW', userId: req.user.id, ip, details: `asset=${asset._id}` });
@@ -724,7 +583,6 @@ app.get('/assets/:id/raw', authenticate, async (req, res) => {
     const ext = extOf(asset.filename);
     const wmText = `${req.user.email}  ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`;
 
-    // Decrypt the stored file into memory only (never back to plaintext on disk).
     let plain;
     try { plain = readEncrypted(latest.path); }
     catch { await logAudit({ action: 'DECRYPT_FAILED', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'critical' }); return res.status(500).json({ error: 'File could not be decrypted (it may be corrupted or tampered with).' }); }
@@ -750,7 +608,6 @@ app.get('/assets/:id/raw', authenticate, async (req, res) => {
       res.setHeader('Content-Type', 'image/png'); res.setHeader('Content-Disposition', 'inline');
       return res.end(buf);
     }
-    // Word (and any other convertible type): render to a PDF preview, then watermark.
     if (['doc', 'docx'].includes(ext)) {
       try {
         const pdfBuf = await convertToPdf(plain, ext);
@@ -762,7 +619,6 @@ app.get('/assets/:id/raw', authenticate, async (req, res) => {
         return res.status(422).json({ error: 'This document could not be converted for preview. You may still download it if permitted.' });
       }
     }
-    // CAD / Gerber: no reliable server-side renderer exists.
     return res.status(415).json({ error: 'This file type cannot be previewed inline.' });
   } catch (err) { console.error('[RAW]', err.message); if (!res.headersSent) res.status(500).json({ error: 'Could not stream file.' }); }
 });
@@ -789,11 +645,6 @@ async function watermarkImageBuffer(srcBuf, text) {
   return base.resize(w, h, { fit: 'inside' }).composite([{ input: svg, top: 0, left: 0 }]).png().toBuffer();
 }
 
-// Convert an Office document buffer to a PDF buffer using headless LibreOffice.
-// Used so Word files can be previewed inline (they can't render natively in a
-// browser). Works in a private temp dir; inputs/outputs are cleaned up.
-// NOTE: CAD/Gerber have no reliable free converter and are intentionally not
-// handled here; if you add one later, route its extensions through this helper.
 function convertToPdf(inputBuf, ext) {
   return new Promise((resolve, reject) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fk-conv-'));
@@ -1073,7 +924,7 @@ app.post('/users/:id/reset-password', authenticate, authorize('Admin'), async (r
 
 app.use((err, req, res, next) => { if (err) return res.status(400).json({ error: err.message || 'Request failed.' }); next(); });
 
-// ---------------------------------------------------------------- Seed
+// ---------------------------------------------------------------- Seed Data
 async function seed() {
   const seedUsers = [
     { name: 'A. Sterling', email: 'admin@edms.local', password: 'Admin@123', role: 'Admin', title: 'Security Officer' },
@@ -1108,7 +959,6 @@ async function seed() {
       { filename: 'Compliance_Audit_2026.pdf', category: 'Legal', dept: 'Internal', sensitivity: 'Confidential', type: 'application/pdf', fileType: 'PDF' },
     ];
     for (const d of demo) {
-      // Build the plaintext bytes, then store them ENCRYPTED (like real uploads).
       let plain;
       if (d.fileType === 'PDF') {
         const pdf = await PDFDocument.create();
@@ -1128,20 +978,12 @@ async function seed() {
   }
 }
 
-// Connect, seed, and (when run directly) start listening. We export `app` and a
-// `ready` promise so the test suite can import the app without opening a port.
-const ready = mongoose.connect(MONGO_URI).then(async () => {
-  console.log('[DB] Connected to MongoDB');
+// ---------------------------------------------------------------- Execute Seed & Listen
+mongoose.connection.once('open', async () => {
   await seed();
-  // Only bind a port when this file is the entry point (not when imported by tests).
   if (require.main === module) {
     app.listen(PORT, () => console.log(`[API] Fort Knox EDMS v2 running on http://localhost:${PORT}`));
   }
-}).catch((err) => {
-  console.error('[DB] Connection error:', err.message);
-  if (require.main === module) process.exit(1);
-  throw err;
 });
 
-module.exports = { app, ready };
-
+module.exports = { app };
