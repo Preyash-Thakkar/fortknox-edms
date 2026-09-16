@@ -18,7 +18,6 @@ export default function RequestModal({ asset, onClose, onSuccess }) {
                 kind,
                 reason,
             });
-            alert('Access request submitted successfully to the Department Head.');
             if (onSuccess) onSuccess();
             onClose();
         } catch (error) {

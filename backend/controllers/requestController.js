@@ -61,9 +61,13 @@ exports.createRequest = async (req, res) => {
 
         const approverIds = [...new Set(approvers.map(a => String(a._id)))];
         for (const approverId of approverIds) {
-            await notify(approverId, `${req.user.email} requested [${kind.toUpperCase()}] permission for "${asset.filename}".`, '/requests');
-        }
+            await notify(
+                approverId,
+                `Pending Request: ${req.user.name} requested [${kind.toUpperCase()}] access for the file "${asset.filename}".`,
+                '/access-requests'
+            );
 
+        }
         res.status(201).json({ message: 'Request submitted to department head.', request: reqDoc });
     } catch (err) {
         console.error('[ACCESS_REQ]', err.message);
@@ -168,8 +172,13 @@ exports.decideRequest = async (req, res) => {
             details: `request=${reqDoc._id} asset=${reqDoc.asset._id}`,
             severity: decision === 'Approved' ? 'info' : 'warn'
         });
+        const targetRoute = decision === 'Approved' ? `/repository/${reqDoc.asset.category}` : '#';
 
-        await notify(reqDoc.requestedBy._id, `Your ${reqDoc.kind} request for "${reqDoc.asset.filename}" was ${decision.toLowerCase()}.`, '/requests');
+        await notify(
+            reqDoc.requestedBy._id,
+            `${decision}: Your [${reqDoc.kind.toUpperCase()}] request for "${reqDoc.asset.filename}" has been ${decision.toLowerCase()}.`,
+            targetRoute // Routes directly to the specific repository
+        );
 
         res.json({ message: `Request ${decision.toLowerCase()}.`, request: reqDoc });
     } catch (err) {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { api, useAuth } from '../auth';
 import { useCategories } from '../useCategories';
 import { Icon } from './ui';
@@ -30,10 +30,9 @@ function NavItem({ to, icon, label }) {
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `flex items-center gap-3 px-4 py-2 transition-all duration-150 border-l-4 ${
-          isActive
-            ? 'border-on-primary bg-white/10 text-white font-semibold'
-            : 'border-transparent text-on-primary-container hover:bg-white/5 hover:text-white'
+        `flex items-center gap-3 px-4 py-2 transition-all duration-150 border-l-4 ${isActive
+          ? 'border-on-primary bg-white/10 text-white font-semibold'
+          : 'border-transparent text-on-primary-container hover:bg-white/5 hover:text-white'
         }`
       }
     >
@@ -171,26 +170,57 @@ export default function Shell({ children, breadcrumb }) {
                   </span>
                 )}
               </button>
+
               {bellOpen && (
                 <div className="absolute right-0 mt-2 w-80 bg-surface border border-outline-variant rounded-lg shadow-lg overflow-hidden z-20">
-                  <div className="px-md py-2 border-b border-outline-variant flex items-center justify-between">
+                  <div className="px-md py-3 border-b border-outline-variant flex items-center justify-between bg-surface-container-lowest">
                     <span className="font-label-lg text-label-lg font-bold text-primary">Notifications</span>
-                    <button onClick={() => setBellOpen(false)}><Icon name="close" size={16} /></button>
+                    <button onClick={() => setBellOpen(false)} className="text-on-surface-variant hover:text-error transition-colors">
+                      <Icon name="close" size={18} />
+                    </button>
                   </div>
+
                   <div className="max-h-80 overflow-y-auto divide-y divide-outline-variant">
                     {notifs.length === 0 ? (
-                      <p className="px-md py-6 text-center text-on-surface-variant font-body-sm text-body-sm">No notifications yet.</p>
-                    ) : notifs.map((n) => (
-                      <div key={n._id} className={`px-md py-3 ${n.read ? '' : 'bg-secondary-container/20'}`}>
-                        <p className="font-body-sm text-body-sm text-on-surface">{n.text}</p>
-                        <p className="font-label-md text-label-md text-on-surface-variant mt-1">{new Date(n.createdAt).toLocaleString()}</p>
+                      <div className="px-md py-8 text-center text-on-surface-variant flex flex-col items-center">
+                        <Icon name="notifications_off" size={32} className="mb-2 opacity-50" />
+                        <p className="font-body-sm text-body-sm">No notifications yet.</p>
                       </div>
-                    ))}
+                    ) : notifs.map((n) => {
+                      // Determine icon and color based on the notification text
+                      const isApproved = n.text.toLowerCase().includes('approved');
+                      const isDenied = n.text.toLowerCase().includes('denied');
+                      const iconName = isApproved ? 'check_circle' : isDenied ? 'cancel' : 'pending_actions';
+                      const iconColor = isApproved ? 'text-tertiary' : isDenied ? 'text-error' : 'text-secondary';
+
+                      return (
+                        <Link
+                          key={n._id}
+                          to={n.link || '#'}
+                          onClick={() => setBellOpen(false)}
+                          className={`flex gap-3 px-md py-3 transition-colors hover:bg-surface-container-high ${n.read ? 'bg-surface' : 'bg-secondary-container/20'}`}
+                        >
+                          <div className="shrink-0 mt-0.5">
+                            <Icon name={iconName} size={20} className={iconColor} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-body-sm text-body-sm text-on-surface leading-snug">
+                              {/* Splits the text by quotes to bold the filename dynamically */}
+                              {n.text.split('"').map((part, i) =>
+                                i % 2 === 1 ? <strong key={i} className="font-semibold text-primary">"{part}"</strong> : part
+                              )}
+                            </p>
+                            <p className="font-label-md text-label-md text-on-surface-variant mt-1.5 uppercase tracking-wider">
+                              {new Date(n.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                          </div>
+                        </Link>
+                      );
+                    })}
                   </div>
                 </div>
               )}
             </div>
-
             <button
               onClick={doLogout}
               className="font-label-lg text-label-lg bg-primary text-on-primary px-4 py-2 rounded-lg font-bold hover:opacity-90 transition-opacity flex items-center gap-2"

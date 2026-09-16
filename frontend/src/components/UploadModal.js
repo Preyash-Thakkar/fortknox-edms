@@ -1,12 +1,11 @@
 import React, { useState } from 'react';
 import { api } from '../auth';
 import { Icon, Button } from './ui';
+import ConfirmModal from './ConfirmModal';
 
 const SENS = ['Public', 'Internal', 'Confidential', 'Strictly Confidential'];
 const ACCEPT = '.pdf,.doc,.docx,.jpg,.jpeg,.png,.gbr,.ger,.gerber,.gbl,.gtl,.gbs,.gts,.gbo,.gto,.drl,.xln,.dwg,.dxf,.step,.stp,.iges,.igs,.brd,.sch';
 
-// Upload into a specific category. Access is inherited from that category.
-// Single mode: one file + display name + keywords. Bulk mode: many files at once.
 export default function UploadModal({ category, bulk = false, onClose, onUploaded }) {
   const [file, setFile] = useState(null);
   const [files, setFiles] = useState([]);            // bulk
@@ -18,6 +17,7 @@ export default function UploadModal({ category, bulk = false, onClose, onUploade
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [skipped, setSkipped] = useState([]);
+  const [showConfirmClose, setShowConfirmClose] = useState(false);
 
   const departments = category?.departments || [];
 
@@ -51,7 +51,6 @@ export default function UploadModal({ category, bulk = false, onClose, onUploade
     try {
       const { data } = await api.post('/assets/bulk-upload', form, { headers: { 'Content-Type': 'multipart/form-data' } });
       if (data.skipped?.length) {
-        // Some files were rejected (type/scan). Show which, but keep the rest.
         setSkipped(data.skipped);
         setErr(`${data.created} uploaded, ${data.skipped.length} skipped.`);
         setFiles([]);
@@ -64,13 +63,20 @@ export default function UploadModal({ category, bulk = false, onClose, onUploade
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-gutter" onClick={onClose}>
+    <div
+      id="upload-backdrop"
+      className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-gutter"
+      onClick={(e) => {
+        // Only trigger confirm modal if they clicked the exact background, not the form itself
+        if (e.target.id === 'upload-backdrop') setShowConfirmClose(true);
+      }}
+    >
       <div className="bg-surface-container-lowest rounded-lg border border-outline-variant shadow-sharp w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-lg py-3 border-b border-outline-variant">
           <h3 className="font-headline-sm text-headline-sm text-primary flex items-center gap-2">
             <Icon name={bulk ? 'library_add' : 'upload_file'} /> {bulk ? 'Bulk upload to' : 'Upload to'} {category?.name}
           </h3>
-          <button onClick={onClose} className="p-1.5 rounded hover:bg-surface-container-high"><Icon name="close" /></button>
+          <button onClick={() => setShowConfirmClose(true)} className="p-1.5 rounded hover:bg-surface-container-high"><Icon name="close" /></button>
         </div>
 
         <div className="p-lg space-y-md">
@@ -101,7 +107,7 @@ export default function UploadModal({ category, bulk = false, onClose, onUploade
               {files.map((f, i) => (
                 <div key={i} className="flex items-center justify-between font-body-sm text-body-sm">
                   <span className="truncate">{f.name}</span>
-                  <button onClick={() => setFiles(files.filter((_, j) => j !== i))} className="text-on-surface-variant hover:text-error"><Icon name="close" size={14} /></button>
+                  <button onClick={(e) => { e.preventDefault(); setFiles(files.filter((_, j) => j !== i)); }} className="text-on-surface-variant hover:text-error"><Icon name="close" size={14} /></button>
                 </div>
               ))}
             </div>
@@ -168,12 +174,24 @@ export default function UploadModal({ category, bulk = false, onClose, onUploade
         </div>
 
         <div className="flex justify-end gap-sm px-lg py-3 border-t border-outline-variant">
-          <Button variant="ghost" onClick={onClose}>{skipped.length ? 'Close' : 'Cancel'}</Button>
+          <Button variant="ghost" onClick={() => setShowConfirmClose(true)}>{skipped.length ? 'Close' : 'Cancel'}</Button>
           <Button icon="lock" onClick={bulk ? submitBulk : submitSingle} disabled={busy}>
             {busy ? 'Uploading…' : bulk ? `Upload ${files.length || ''} file(s)` : 'Upload Securely'}
           </Button>
         </div>
       </div>
+
+      {showConfirmClose && (
+        <ConfirmModal
+          title="Discard Upload?"
+          message="You have unsaved changes. Are you sure you want to close this form? All progress will be lost."
+          confirmText="Yes, Discard"
+          cancelText="Keep Editing"
+          isDanger={true}
+          onConfirm={onClose}
+          onCancel={() => setShowConfirmClose(false)}
+        />
+      )}
     </div>
   );
 }
