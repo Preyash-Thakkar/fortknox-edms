@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../auth';
 import { Icon, Button } from './ui';
 
-export default function TraceabilityModal({ assetId, onClose }) {
+export default function TraceabilityModal({ assetId, onClose, onView, onDownload }) {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -41,10 +41,8 @@ export default function TraceabilityModal({ assetId, onClose }) {
 
     const { asset, logs } = data;
 
-    const allVersions = [
-        { ...asset, isCurrent: true },
-        ...(asset.history || []).map(h => ({ ...h, isCurrent: false }))
-    ].sort((a, b) => new Date(b.updatedAt || b.uploadedAt) - new Date(a.updatedAt || a.uploadedAt));
+    // Sort from newest to oldest based on version number
+    const allVersions = [...(asset.versions || [])].sort((a, b) => b.version - a.version);
 
     return (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
@@ -75,46 +73,66 @@ export default function TraceabilityModal({ assetId, onClose }) {
 
                     {tab === 'versions' && (
                         <div className="space-y-4">
-                            {allVersions.map((v, i) => (
-                                <div key={i} className="flex gap-4 p-4 rounded-lg border border-outline-variant bg-surface relative">
-                                    {v.isCurrent && (
-                                        <span className="absolute -top-2.5 right-4 bg-tertiary text-on-tertiary px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest shadow-sm">
-                                            Current Version
-                                        </span>
-                                    )}
-                                    <div className="shrink-0 flex flex-col items-center justify-center w-12 h-12 rounded bg-surface-container-high text-primary font-bold">
-                                        v{allVersions.length - i}
+                            {allVersions.map((v) => {
+                                const isCurrent = v.version === asset.currentVersion;
+                                // Bulletproof date fallback logic
+                                const rawDate = v.createdAt || v.uploadedAt || asset.updatedAt || asset.createdAt || Date.now();
+                                const displayDate = new Date(rawDate).toLocaleString();
+
+                                return (
+                                    <div key={v.version} className="flex gap-4 p-4 rounded-lg border border-outline-variant bg-surface relative">
+                                        {isCurrent && (
+                                            <span className="absolute -top-2.5 right-4 bg-tertiary text-on-tertiary px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest shadow-sm">
+                                                Current Version
+                                            </span>
+                                        )}
+                                        <div className="shrink-0 flex flex-col items-center justify-center w-12 h-12 rounded bg-surface-container-high text-primary font-bold">
+                                            v{v.version}
+                                        </div>
+                                        <div className="flex-1">
+                                            <p className="font-label-lg text-label-lg text-on-surface">{v.note || 'Initial version'}</p>
+                                            <p className="font-body-sm text-body-sm text-on-surface-variant mt-1 mb-2">
+                                                Committed by <strong className="text-on-surface">{v.uploadedBy?.name || 'Unknown'}</strong> on {displayDate}
+                                            </p>
+
+                                            <div className="flex items-center gap-4 border-t border-outline-variant pt-2 mt-2">
+                                                {onView && (
+                                                    <button onClick={() => { onClose(); onView(asset._id, v.version); }} className="text-primary hover:text-primary/80 flex items-center gap-1 text-[13px] font-bold transition-colors">
+                                                        <Icon name="visibility" size={16} /> View v{v.version}
+                                                    </button>
+                                                )}
+                                                {onDownload && (
+                                                    <button onClick={() => onDownload(asset._id, asset.filename, v.version)} className="text-tertiary hover:text-tertiary/80 flex items-center gap-1 text-[13px] font-bold transition-colors">
+                                                        <Icon name="download" size={16} /> Download v{v.version}
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div className="flex-1">
-                                        <p className="font-label-lg text-label-lg text-on-surface">{v.versionNote || 'No note provided'}</p>
-                                        <p className="font-body-sm text-body-sm text-on-surface-variant mt-1">
-                                            Committed by <strong className="text-on-surface">{v.uploadedBy?.name || 'Unknown'}</strong> on {new Date(v.updatedAt || v.uploadedAt).toLocaleString()}
-                                        </p>
-                                    </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     )}
 
                     {tab === 'logs' && (
                         <div className="divide-y divide-outline-variant font-data-mono text-[13px]">
-                            {logs.map(log => (
-                                <div key={log._id} className="py-3 flex gap-4 hover:bg-surface-container-low transition-colors px-2 rounded">
-                                    <div className="w-40 shrink-0 text-on-surface-variant">
-                                        {new Date(log.createdAt || log.timestamp).toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                            {logs.map(log => {
+                                const logDate = new Date(log.createdAt || log.timestamp || Date.now()).toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                                return (
+                                    <div key={log._id} className="py-3 flex gap-4 hover:bg-surface-container-low transition-colors px-2 rounded">
+                                        <div className="w-40 shrink-0 text-on-surface-variant">{logDate}</div>
+                                        <div className={`w-40 shrink-0 font-bold ${log.severity === 'CRITICAL' ? 'text-error' : log.severity === 'WARN' ? 'text-secondary' : 'text-tertiary'}`}>
+                                            {log.action}
+                                        </div>
+                                        <div className="w-48 shrink-0 text-on-surface font-semibold truncate">
+                                            {log.userId?.name || log.userId?.email || 'System'}
+                                        </div>
+                                        <div className="flex-1 text-on-surface-variant truncate">
+                                            {log.details.replace(`asset=${asset._id}`, '').trim()}
+                                        </div>
                                     </div>
-                                    <div className={`w-40 shrink-0 font-bold ${log.severity === 'CRITICAL' ? 'text-error' : log.severity === 'WARN' ? 'text-secondary' : 'text-tertiary'}`}>
-                                        {log.action}
-                                    </div>
-                                    {/* FIXED: Reading from userId instead of actor */}
-                                    <div className="w-48 shrink-0 text-on-surface font-semibold truncate">
-                                        {log.userId?.name || log.userId?.email || 'System'}
-                                    </div>
-                                    <div className="flex-1 text-on-surface-variant truncate" title={log.details}>
-                                        {log.details.replace(`asset=${asset._id}`, '').trim()}
-                                    </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                             {logs.length === 0 && (
                                 <div className="text-center py-8 text-on-surface-variant">No access logs recorded for this asset yet.</div>
                             )}

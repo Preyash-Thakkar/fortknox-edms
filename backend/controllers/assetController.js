@@ -381,19 +381,29 @@ exports.viewAsset = async (req, res) => {
         assetObj._deptAllowedRoles = asset.department?.allowedRoles;
         assetObj._deptDownloadRoles = asset.department?.downloadRoles;
 
+        // One permission check rules them all.
         if (!canView(req.user, assetObj)) {
             await logAudit({ action: 'VIEW_DENIED', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'critical' });
             return res.status(403).json({ error: 'Forbidden: not authorized to view this asset.' });
         }
 
-        // Track view metrics in active grant log
-        const activeLog = asset.accessLogs.find(l => String(l.user) === String(req.user.id) && !l.revokedAt);
+        const activeLog = asset.accessLogs?.find(l => String(l.user) === String(req.user.id) && !l.revokedAt);
         if (activeLog) {
             activeLog.viewsCount += 1;
             await asset.save();
         }
 
-        const latest = asset.versions[asset.versions.length - 1];
+        // Target specific version if requested via query (e.g., ?v=2), else use the latest
+        const reqVersion = parseInt(req.query.v, 10);
+        let targetVersionData;
+
+        if (reqVersion && !isNaN(reqVersion)) {
+            targetVersionData = asset.versions.find(v => v.version === reqVersion);
+        }
+        if (!targetVersionData) {
+            targetVersionData = asset.versions[asset.versions.length - 1];
+        }
+
         const ext = extOf(asset.filename);
         const isPdf = ext === 'pdf';
         const isImage = ['jpg', 'jpeg', 'png'].includes(ext);
@@ -401,15 +411,26 @@ exports.viewAsset = async (req, res) => {
         const previewable = isPdf || isImage || isConvertible;
         const previewKind = isPdf ? 'pdf' : isImage ? 'image' : isConvertible ? 'pdf' : 'none';
 
-        await logAudit({ action: 'VIEW', userId: req.user.id, ip, details: `asset=${asset._id}` });
+        await logAudit({ action: 'VIEW', userId: req.user.id, ip, details: `asset=${asset._id} version=${targetVersionData.version}` });
         res.json({
             message: 'Secure view session opened.',
             watermark: `CONFIDENTIAL • ${req.user.email} • ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
             previewable, previewKind,
             canDownload: canDownload(req.user, assetObj),
-            asset: { id: asset._id, filename: asset.filename, type: asset.type, fileType: asset.fileType, sensitivity: asset.sensitivity, version: asset.currentVersion, hash: latest?.hash || '' },
+            asset: {
+                id: asset._id,
+                filename: asset.filename,
+                type: asset.type,
+                fileType: asset.fileType,
+                sensitivity: asset.sensitivity,
+                version: targetVersionData.version,
+                hash: targetVersionData.hash || ''
+            },
         });
-    } catch (err) { console.error('[VIEW]', err.message); res.status(500).json({ error: 'Could not open secure view.' }); }
+    } catch (err) {
+        console.error('[VIEW]', err.message);
+        res.status(500).json({ error: 'Could not open secure view.' });
+    }
 };
 
 exports.rawAsset = async (req, res) => {
@@ -491,58 +512,37 @@ exports.uploadNewVersion = async (req, res) => {
         const asset = await Asset.findById(req.params.id);
         if (!asset) return res.status(404).json({ error: 'Asset not found.' });
 
-        // Authorization: Must be Admin, Owner, or explicitly granted Edit access
-        const isGranted = asset.userEditGrants?.includes(req.user.id);
-        const isOwner = String(asset.uploadedBy) === String(req.user.id);
-        const isAdmin = req.user.role === 'Admin';
-
-        if (!isGranted && !isOwner && !isAdmin) {
-            return res.status(403).json({ error: 'You do not have edit authorization for this document.' });
-        }
-
         if (!req.file) return res.status(400).json({ error: 'No new file provided.' });
 
-        // 1. Archive the current file into the history array
-        const archivedVersion = {
-            filename: asset.filename,
-            filepath: asset.filepath,
-            size: asset.size,
-            mimetype: asset.mimetype,
-            versionNote: asset.versionNote || 'Previous version',
-            uploadedBy: asset.uploadedBy,
-            uploadedAt: asset.updatedAt || asset.createdAt
-        };
-
-        // Initialize history array if it doesn't exist
-        if (!asset.history) asset.history = [];
-        asset.history.push(archivedVersion);
-
-        // 2. Update the main asset with the new file
-        asset.filename = req.body.filename || req.file.originalname;
-        asset.filepath = req.file.path;
-        asset.size = req.file.size;
-        asset.mimetype = req.file.mimetype;
-        asset.versionNote = req.body.versionNote || 'Updated version';
-        asset.uploadedBy = req.user.id; // The person who uploaded v2
-
-        // Ensure the uploader retains view/download/edit rights on their new version
-        if (!asset.userViewGrants.includes(req.user.id)) asset.userViewGrants.push(req.user.id);
-        if (!asset.userDownloadGrants.includes(req.user.id)) asset.userDownloadGrants.push(req.user.id);
-        if (!asset.userEditGrants?.includes(req.user.id)) {
-            if (!asset.userEditGrants) asset.userEditGrants = [];
-            asset.userEditGrants.push(req.user.id);
+        // Run the exact same security and encryption ingest used in your initial upload
+        const scan = scanFile(req.file.path, req.file.originalname);
+        if (!scan.ok) {
+            const fs = require('fs');
+            fs.unlink(req.file.path, () => { });
+            return res.status(400).json({ error: `Upload rejected: ${scan.reason}` });
         }
+        const enc = ingestUpload(req.file.path);
+
+        const nextV = (asset.currentVersion || 1) + 1;
+        const versionNote = req.body.versionNote || 'Updated version';
+
+        // Push directly to the correct 'versions' array
+        asset.versions.push({
+            version: nextV,
+            path: enc.path,
+            size: enc.size,
+            hash: enc.hash,
+            uploadedBy: req.user.id,
+            note: versionNote,
+            createdAt: new Date() // Explicit timestamp to prevent Invalid Date moving forward
+        });
+
+        asset.currentVersion = nextV;
+        asset.filename = req.body.filename || req.file.originalname;
 
         await asset.save();
 
-        // 3. WORM Audit Log
-        await logAudit({
-            action: 'VERSION_UPDATED',
-            userId: req.user.id,
-            ip,
-            details: `asset=${asset._id} new_file="${asset.filename}"`,
-            severity: 'info'
-        });
+        await logAudit({ action: 'VERSION_UPDATED', userId: req.user.id, ip, details: `asset=${asset._id} v=${nextV} note="${versionNote}"`, severity: 'info' });
 
         res.json({ message: 'New version securely checked in.', asset });
     } catch (err) {
@@ -551,7 +551,6 @@ exports.uploadNewVersion = async (req, res) => {
     }
 };
 
-
 exports.getAssetTraceability = async (req, res) => {
     try {
         const Asset = require('../models/Asset');
@@ -559,7 +558,7 @@ exports.getAssetTraceability = async (req, res) => {
 
         const asset = await Asset.findById(req.params.id)
             .populate('uploadedBy', 'name email role')
-            .populate('history.uploadedBy', 'name email role');
+            .populate('versions.uploadedBy', 'name email role');
 
         if (!asset) return res.status(404).json({ error: 'Asset not found.' });
 
@@ -567,7 +566,6 @@ exports.getAssetTraceability = async (req, res) => {
             return res.status(403).json({ error: 'Not authorized to view traceability logs.' });
         }
 
-        // FIXED: Using 'userId' to match your AuditLog schema instead of 'actor'
         const logs = await AuditLog.find({
             $or: [
                 { asset: asset._id },
@@ -581,10 +579,11 @@ exports.getAssetTraceability = async (req, res) => {
             asset: {
                 _id: asset._id,
                 filename: asset.filename,
-                versionNote: asset.versionNote,
                 uploadedBy: asset.uploadedBy,
-                updatedAt: asset.updatedAt,
-                history: asset.history || []
+                currentVersion: asset.currentVersion,
+                updatedAt: asset.updatedAt, // RESTORED
+                createdAt: asset.createdAt, // RESTORED
+                versions: asset.versions || []
             },
             logs
         });
