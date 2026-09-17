@@ -289,21 +289,38 @@ exports.deleteAsset = async (req, res) => {
 
 exports.grantAccess = async (req, res) => {
     const ip = clientIp(req);
-    const { targetId, userId, kind, revoke } = req.body || {};
-    const finalUserId = targetId || userId;
+    // FIXED: Correctly extracting targetId and targetType sent by the frontend
+    const { targetId, targetType, userId, kind, revoke } = req.body || {};
+    const finalId = targetId || userId;
+
     try {
         const asset = await Asset.findById(req.params.id);
         if (!asset) return res.status(404).json({ error: 'Asset not found.' });
-        const target = await User.findById(userId);
-        if (!target) return res.status(404).json({ error: 'User not found.' });
 
-        const listName = kind === 'download' ? 'userDownloadGrants' : 'userViewGrants';
-        const has = userGranted(asset[listName], userId);
+        let target;
+        let listName;
+
+        // FIXED: Route the database search based on whether it is a User or Department
+        if (targetType === 'department') {
+            const Department = require('../models/Department');
+            target = await Department.findById(finalId);
+            listName = kind === 'download' ? 'deptDownloadGrants' : 'deptViewGrants';
+            if (!target) return res.status(404).json({ error: 'Department not found.' });
+        } else {
+            const User = require('../models/User');
+            target = await User.findById(finalId);
+            listName = kind === 'download' ? 'userDownloadGrants' : 'userViewGrants';
+            if (!target) return res.status(404).json({ error: 'User not found.' });
+        }
+
+        // Initialize array if it doesn't exist in schema yet
+        if (!asset[listName]) asset[listName] = [];
+        const has = userGranted(asset[listName], finalId);
 
         if (revoke) {
-            asset[listName] = asset[listName].filter((id) => String(id) !== String(userId));
-            // Update access logs history entry with duration and revocation timestamp
-            const logEntry = asset.accessLogs.find(l => String(l.user) === String(userId) && l.kind === kind && !l.revokedAt);
+            asset[listName] = asset[listName].filter((id) => String(id) !== String(finalId));
+
+            const logEntry = asset.accessLogs?.find(l => String(l.user) === String(finalId) && l.kind === kind && !l.revokedAt);
             if (logEntry) {
                 logEntry.revokedAt = new Date();
                 const diffMs = logEntry.revokedAt - new Date(logEntry.grantedAt);
@@ -311,12 +328,20 @@ exports.grantAccess = async (req, res) => {
                 logEntry.durationString = `${diffHrs} hours`;
             }
         } else if (!has) {
-            asset[listName].push(userId);
-            if (kind === 'download' && !userGranted(asset.userViewGrants, userId)) asset.userViewGrants.push(userId);
+            asset[listName].push(finalId);
 
-            // Push new tracked grant window into accessLogs
+            // Auto-grant View access if giving Download access
+            if (kind === 'download') {
+                const viewListName = targetType === 'department' ? 'deptViewGrants' : 'userViewGrants';
+                if (!asset[viewListName]) asset[viewListName] = [];
+                if (!userGranted(asset[viewListName], finalId)) {
+                    asset[viewListName].push(finalId);
+                }
+            }
+
+            if (!asset.accessLogs) asset.accessLogs = [];
             asset.accessLogs.push({
-                user: userId,
+                user: finalId,
                 kind: kind || 'view',
                 grantedBy: req.user.id,
                 grantedAt: new Date(),
@@ -325,10 +350,18 @@ exports.grantAccess = async (req, res) => {
         }
 
         await asset.save();
-        await logAudit({ action: revoke ? 'GRANT_REVOKED' : 'GRANT_ADDED', userId: req.user.id, ip, details: `asset=${asset._id} user=${target.email} kind=${kind || 'view'}`, severity: 'warn' });
-        if (!revoke) await notify(userId, `You were granted ${kind || 'view'} access to "${asset.filename}".`, '/');
+        await logAudit({ action: revoke ? 'GRANT_REVOKED' : 'GRANT_ADDED', userId: req.user.id, ip, details: `asset=${asset._id} target=${target.name || target.email} kind=${kind || 'view'}`, severity: 'warn' });
+
+        // Only notify Users, not Departments
+        if (!revoke && targetType !== 'department') {
+            await notify(finalId, `You were granted ${kind || 'view'} access to "${asset.filename}".`, '/');
+        }
+
         res.json({ message: revoke ? 'Grant revoked and duration logged.' : 'Grant added with tracking.' });
-    } catch (err) { console.error('[GRANT]', err.message); res.status(500).json({ error: 'Could not update grant.' }); }
+    } catch (err) {
+        console.error('[GRANT]', err.message);
+        res.status(500).json({ error: 'Could not update grant.' });
+    }
 };
 
 exports.getGrants = async (req, res) => {

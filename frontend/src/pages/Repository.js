@@ -180,13 +180,18 @@ export default function Repository() {
         ) : (
           <div className="divide-y divide-outline-variant">
             {assets.map((a, idx) => {
-              // ROBUST VERSION CHECK: Forces the button to appear if you are Admin, Management, or the original Uploader
               const uploaderId = a.uploadedBy?._id || a.uploadedBy;
               const currentUserId = user?._id || user?.id;
               const isOwner = uploaderId && currentUserId && String(uploaderId) === String(currentUserId);
               const isHead = user?.role === 'Management';
               const isAdmin = user?.role === 'Admin';
               const canVersion = a.canEdit || isAdmin || isHead || isOwner;
+
+              // MULTI-TIER REQUEST LOGIC
+              const canRequestView = !a.accessible && !a.requestPendingView;
+              const canRequestDownload = a.accessible && !a.canDownload && !a.requestPendingDownload && !isAdmin && !isHead && !isOwner;
+              const canRequestEdit = a.accessible && !canVersion && !a.requestPendingEdit && !isAdmin && !isHead && !isOwner;
+              const showRequestBtn = canRequestView || canRequestDownload || canRequestEdit;
 
               return (
                 <div
@@ -209,12 +214,14 @@ export default function Repository() {
                   </div>
                   <div className="col-span-1 font-data-mono text-data-mono text-on-surface-variant">{bytes(a.size)}</div>
                   <div className="col-span-2"><SensitivityBadge level={a.sensitivity} /></div>
+
+                  {/* ACCESS STATUS BADGE */}
                   <div className="col-span-2">
                     {a.accessible ? (
                       <span className="flex items-center gap-1.5 text-on-tertiary-container font-label-md text-label-md">
                         <Icon name="check_circle" size={16} fill={1} /> Accessible
                       </span>
-                    ) : a.requestPending ? (
+                    ) : a.requestPendingView ? (
                       <span className="flex items-center gap-1.5 text-secondary font-label-md text-label-md">
                         <Icon name="hourglass_top" size={16} /> Requested
                       </span>
@@ -224,6 +231,8 @@ export default function Repository() {
                       </span>
                     )}
                   </div>
+
+                  {/* ACTION BUTTONS */}
                   <div className="col-span-1 flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     {a.accessible && (
                       <button title="Secure View" onClick={() => openView(a._id)} className="p-2 rounded hover:bg-surface-container-high text-primary">
@@ -235,24 +244,25 @@ export default function Repository() {
                         <Icon name="download" size={20} />
                       </button>
                     )}
-
-                    {/* Fixed Check-In Button Logic */}
                     {a.accessible && canVersion && (
                       <button title="Check-In New Version" onClick={() => setCheckInAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-primary transition-colors">
                         <Icon name="publish" size={20} />
                       </button>
                     )}
-
                     {a.accessible && (
                       <button title="Version History" onClick={() => setVersionAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-secondary">
                         <Icon name="history" size={20} />
                       </button>
                     )}
-                    {!a.accessible && !a.requestPending && (
-                      <button onClick={() => requestAccess(a)} className="border px-3 py-1 rounded text-sm hover:bg-gray-100 flex items-center gap-1">
-                        <Icon name="key" /> Request
+
+                    {/* FIXED: DYNAMIC REQUEST / UPGRADE BUTTON */}
+                    {showRequestBtn && (
+                      <button onClick={() => requestAccess(a)} className="border border-outline-variant px-3 py-1 rounded text-[12px] hover:bg-surface-container-high flex items-center gap-1 transition-colors text-on-surface-variant font-semibold shadow-sm ml-2">
+                        <Icon name="key" size={14} />
+                        {a.accessible ? 'Upgrade' : 'Request'}
                       </button>
                     )}
+
                     {isAdmin && (
                       <button title="Manage (admin)" onClick={() => setAdminAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-on-surface-variant">
                         <Icon name="settings" size={20} />

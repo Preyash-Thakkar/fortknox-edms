@@ -5,7 +5,6 @@ import RoleGuard from './RoleGuard';
 
 const SENS = ['Public', 'Internal', 'Confidential', 'Strictly Confidential'];
 
-// New Component: Document Control Workflow
 const WorkflowControls = ({ asset, currentUser, onStatusChange }) => {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState('');
@@ -14,10 +13,9 @@ const WorkflowControls = ({ asset, currentUser, onStatusChange }) => {
     setLoading(true);
     setMsg('');
     try {
-      // Note: Ensure your backend PATCH /assets/:id endpoint accepts 'controlStatus'
       await api.patch(`/assets/${asset._id}`, { controlStatus: newStatus });
       setMsg(`Asset successfully moved to ${newStatus}`);
-      if (onStatusChange) onStatusChange(); // Refresh the data globally
+      if (onStatusChange) onStatusChange();
     } catch (error) {
       alert(error.response?.data?.error || 'Failed to update status');
     } finally {
@@ -37,7 +35,6 @@ const WorkflowControls = ({ asset, currentUser, onStatusChange }) => {
 
         {msg && <div className="text-primary font-body-sm mb-4">{msg}</div>}
 
-        {/* ROLE GUARD: Only Admins and Management can see these buttons */}
         <RoleGuard user={currentUser} allowedRoles={['Management']}>
           <div className="flex gap-2">
             {(asset.controlStatus === 'Draft' || !asset.controlStatus) && (
@@ -69,23 +66,19 @@ const WorkflowControls = ({ asset, currentUser, onStatusChange }) => {
   );
 };
 
-// CRITICAL: Ensure you pass `currentUser` into this modal from the parent Repository page
 export default function AssetAdminModal({ asset, categories, currentUser, onClose, onChanged }) {
   const [tab, setTab] = useState('edit');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
-  // edit state
   const [filename, setFilename] = useState(asset.filename);
   const [keywords, setKeywords] = useState(asset.keywords || '');
   const [sensitivity, setSensitivity] = useState(asset.sensitivity);
 
-  // move/copy state
   const [targetCat, setTargetCat] = useState('');
   const [targetDept, setTargetDept] = useState('');
   const [mode, setMode] = useState('move');
 
-  // grants state
   const [users, setUsers] = useState([]);
   const [grants, setGrants] = useState({
     userView: [], userDownload: [],
@@ -98,7 +91,6 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
   const [grantKind, setGrantKind] = useState('view');
 
   const targetCategory = categories.find((c) => c._id === targetCat);
-
   const allDepartments = categories.flatMap(c =>
     c.departments.map(d => ({ ...d, categoryName: c.name }))
   );
@@ -110,8 +102,8 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
         api.get('/users')
       ]);
       setGrants({
-        userView: g.data.userView || [],
-        userDownload: g.data.userDownload || [],
+        userView: g.data.viewGrants || g.data.userView || [],
+        userDownload: g.data.downloadGrants || g.data.userDownload || [],
         deptView: g.data.deptView || [],
         deptDownload: g.data.deptDownload || [],
         accessLogs: g.data.accessLogs || []
@@ -203,7 +195,6 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
           {msg && <div className="text-on-tertiary-container font-body-sm text-body-sm bg-secondary-container/40 px-3 py-2 rounded">{msg}</div>}
           {err && <div className="text-error font-body-sm text-body-sm bg-error-container px-3 py-2 rounded">{err}</div>}
 
-          {/* EDIT TAB */}
           {tab === 'edit' && (
             <>
               <div><label className="font-label-lg text-label-lg text-on-surface-variant block mb-1">DISPLAY NAME</label>
@@ -218,12 +209,10 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
             </>
           )}
 
-          {/* WORKFLOW STATUS TAB */}
           {tab === 'status' && (
             <WorkflowControls asset={asset} currentUser={currentUser} onStatusChange={onChanged} />
           )}
 
-          {/* MOVE/COPY TAB */}
           {tab === 'move' && (
             <>
               <div className="flex gap-2">
@@ -244,7 +233,6 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
             </>
           )}
 
-          {/* GRANTS & LOGS TAB */}
           {tab === 'grants' && (
             <div className="space-y-lg">
               <div className="bg-surface-container-low p-md rounded border border-outline-variant">
@@ -259,7 +247,7 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
                 </div>
                 <div className="flex gap-2 items-end">
                   <div className="flex-1">
-                    <select value={grantTargetId} onChange={(e) => setGrantTargetId(e.target.value)} className="w-full px-3 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md">
+                    <select value={grantTargetId} onChange={(e) => setGrantTargetId(e.target.value)} className="w-full px-3 pr-10 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md">
                       <option value="">— Select {grantTargetType} —</option>
                       {grantTargetType === 'user'
                         ? users.map((u) => <option key={u._id} value={u._id}>{u.name} ({u.role})</option>)
@@ -267,7 +255,8 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
                       }
                     </select>
                   </div>
-                  <select value={grantKind} onChange={(e) => setGrantKind(e.target.value)} className="px-3 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md">
+                  {/* FIXED: Added pr-10 to separate the text from the dropdown chevron */}
+                  <select value={grantKind} onChange={(e) => setGrantKind(e.target.value)} className="px-3 pr-10 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md">
                     <option value="view">View Only</option>
                     <option value="download">Download</option>
                   </select>
@@ -340,11 +329,9 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
                   )}
                 </div>
               </div>
-
             </div>
           )}
 
-          {/* DELETE TAB */}
           {tab === 'delete' && (
             <div className="text-center py-md">
               <Icon name="warning" size={36} className="text-error" />
