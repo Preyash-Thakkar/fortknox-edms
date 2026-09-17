@@ -478,3 +478,106 @@ exports.rawAsset = async (req, res) => {
         return res.status(415).json({ error: 'Unsupported preview type.' });
     } catch (err) { console.error('[RAW]', err.message); if (!res.headersSent) res.status(500).json({ error: 'Could not stream file.' }); }
 };
+
+exports.uploadNewVersion = async (req, res) => {
+    const ip = clientIp(req);
+    try {
+        const asset = await Asset.findById(req.params.id);
+        if (!asset) return res.status(404).json({ error: 'Asset not found.' });
+
+        // Authorization: Must be Admin, Owner, or explicitly granted Edit access
+        const isGranted = asset.userEditGrants?.includes(req.user.id);
+        const isOwner = String(asset.uploadedBy) === String(req.user.id);
+        const isAdmin = req.user.role === 'Admin';
+
+        if (!isGranted && !isOwner && !isAdmin) {
+            return res.status(403).json({ error: 'You do not have edit authorization for this document.' });
+        }
+
+        if (!req.file) return res.status(400).json({ error: 'No new file provided.' });
+
+        // 1. Archive the current file into the history array
+        const archivedVersion = {
+            filename: asset.filename,
+            filepath: asset.filepath,
+            size: asset.size,
+            mimetype: asset.mimetype,
+            versionNote: asset.versionNote || 'Previous version',
+            uploadedBy: asset.uploadedBy,
+            uploadedAt: asset.updatedAt || asset.createdAt
+        };
+
+        // Initialize history array if it doesn't exist
+        if (!asset.history) asset.history = [];
+        asset.history.push(archivedVersion);
+
+        // 2. Update the main asset with the new file
+        asset.filename = req.body.filename || req.file.originalname;
+        asset.filepath = req.file.path;
+        asset.size = req.file.size;
+        asset.mimetype = req.file.mimetype;
+        asset.versionNote = req.body.versionNote || 'Updated version';
+        asset.uploadedBy = req.user.id; // The person who uploaded v2
+
+        // Ensure the uploader retains view/download/edit rights on their new version
+        if (!asset.userViewGrants.includes(req.user.id)) asset.userViewGrants.push(req.user.id);
+        if (!asset.userDownloadGrants.includes(req.user.id)) asset.userDownloadGrants.push(req.user.id);
+        if (!asset.userEditGrants?.includes(req.user.id)) {
+            if (!asset.userEditGrants) asset.userEditGrants = [];
+            asset.userEditGrants.push(req.user.id);
+        }
+
+        await asset.save();
+
+        // 3. WORM Audit Log
+        await logAudit({
+            action: 'VERSION_UPDATED',
+            userId: req.user.id,
+            ip,
+            details: `asset=${asset._id} new_file="${asset.filename}"`,
+            severity: 'info'
+        });
+
+        res.json({ message: 'New version securely checked in.', asset });
+    } catch (err) {
+        console.error('[UPLOAD_VERSION]', err.message);
+        res.status(500).json({ error: 'Could not upload new version.' });
+    }
+};
+
+
+exports.getAssetTraceability = async (req, res) => {
+    try {
+        const asset = await Asset.findById(req.params.id)
+            .populate('uploadedBy', 'name email role')
+            .populate('history.uploadedBy', 'name email role');
+
+        if (!asset) return res.status(404).json({ error: 'Asset not found.' });
+        if (req.user.role !== 'Admin' && req.user.role !== 'Management' && String(asset.uploadedBy._id) !== String(req.user.id)) {
+            return res.status(403).json({ error: 'Not authorized to view traceability logs for this asset.' });
+        }
+        const logs = await AuditLog.find({
+            $or: [
+                { asset: asset._id },
+                { details: { $regex: String(asset._id) } }
+            ]
+        })
+            .populate('actor', 'name email role')
+            .sort({ createdAt: -1 });
+
+        res.json({
+            asset: {
+                _id: asset._id,
+                filename: asset.filename,
+                versionNote: asset.versionNote,
+                uploadedBy: asset.uploadedBy,
+                updatedAt: asset.updatedAt,
+                history: asset.history || []
+            },
+            logs
+        });
+    } catch (err) {
+        console.error('[TRACEABILITY]', err.message);
+        res.status(500).json({ error: 'Failed to fetch traceability data.' });
+    }
+};

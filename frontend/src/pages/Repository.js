@@ -7,9 +7,10 @@ import {
 } from '../components/ui';
 import SecureViewer from '../components/SecureViewer';
 import UploadModal from '../components/UploadModal';
-import VersionDrawer from '../components/VersionDrawer';
 import AssetAdminModal from '../components/AssetAdminModal';
 import RequestModal from '../components/RequestModal';
+import VersionModal from '../components/VersionModal';
+import TraceabilityModal from '../components/TraceabilityModal';
 
 export default function Repository() {
   const { categoryId } = useParams();
@@ -22,6 +23,7 @@ export default function Repository() {
   const [showUpload, setShowUpload] = useState(false);
   const [versionAsset, setVersionAsset] = useState(null);
   const [adminAsset, setAdminAsset] = useState(null);
+  const [checkInAsset, setCheckInAsset] = useState(null); // <-- NEW STATE FOR SMART VERSIONING
   const [bulkMode, setBulkMode] = useState(false);
   const [msg, setMsg] = useState('');
   const [deptFilter, setDeptFilter] = useState('');     // '' = all departments
@@ -216,6 +218,14 @@ export default function Repository() {
                       <Icon name="download" size={20} />
                     </button>
                   )}
+
+                  {/* --- NEW: CHECK-IN VERSION BUTTON --- */}
+                  {a.accessible && (a.canEdit || user.role === 'Admin') && (
+                    <button title="Check-In New Version" onClick={() => setCheckInAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-primary transition-colors">
+                      <Icon name="publish" size={20} />
+                    </button>
+                  )}
+
                   {a.accessible && (
                     <button title="Version History" onClick={() => setVersionAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-secondary">
                       <Icon name="history" size={20} />
@@ -260,7 +270,21 @@ export default function Repository() {
           onUploaded={() => { setShowUpload(false); setMsg(bulkMode ? 'Files uploaded.' : 'Asset uploaded.'); load(); refreshCategories(); }}
         />
       )}
-      {versionAsset && <VersionDrawer asset={versionAsset} onClose={() => setVersionAsset(null)} />}
+
+      {/* --- NEW: VERSION CHECK-IN MODAL --- */}
+      {checkInAsset && (
+        <VersionModal
+          asset={checkInAsset}
+          onClose={() => setCheckInAsset(null)}
+          onUploaded={() => {
+            setCheckInAsset(null);
+            setMsg('New version checked in successfully.');
+            load();
+          }}
+        />
+      )}
+
+      {versionAsset && <TraceabilityModal asset={versionAsset} onClose={() => setVersionAsset(null)} />}
       {adminAsset && (
         <AssetAdminModal
           asset={adminAsset}
@@ -269,14 +293,13 @@ export default function Repository() {
           onChanged={() => { load(); }}
         />
       )}
-      {/* --- CUSTOM REQUEST MODAL --- */}
       {requestingAsset && (
         <RequestModal
           asset={requestingAsset}
           onClose={() => setRequestingAsset(null)}
           onSuccess={() => {
             setMsg('Access request submitted successfully.');
-            load(); // This reloads your asset list
+            load();
           }}
         />
       )}

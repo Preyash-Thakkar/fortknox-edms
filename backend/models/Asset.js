@@ -17,7 +17,6 @@ const grantEntrySchema = new mongoose.Schema({
     grantedAt: { type: Date, default: Date.now },
     revokedAt: { type: Date, default: null },
     durationString: { type: String, default: 'Active' },
-    // Live counters during the active grant window
     viewsCount: { type: Number, default: 0 },
     editsCount: { type: Number, default: 0 },
     downloadsCount: { type: Number, default: 0 },
@@ -37,7 +36,6 @@ const assetSchema = new mongoose.Schema({
     allowedRoles: [{ type: String }],
     downloadRoles: [{ type: String }],
 
-    // Embedded Active Grants and immutable Audit Logs for individual access windows
     userViewGrants: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     userDownloadGrants: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     accessLogs: [grantEntrySchema],
@@ -45,8 +43,17 @@ const assetSchema = new mongoose.Schema({
     currentVersion: { type: Number, default: 1 },
     versions: [versionSchema],
     uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-
-    // Soft Deletion Control (Admin / Owner workflow)
+    userEditGrants: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    versionNote: { type: String, default: 'Initial version' },
+    history: [{
+        filename: String,
+        filepath: String,
+        size: Number,
+        mimetype: String,
+        versionNote: String,
+        uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        uploadedAt: Date
+    }],
     deletedAt: { type: Date, default: null },
     deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, { timestamps: true });
