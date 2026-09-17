@@ -381,7 +381,6 @@ exports.viewAsset = async (req, res) => {
         assetObj._deptAllowedRoles = asset.department?.allowedRoles;
         assetObj._deptDownloadRoles = asset.department?.downloadRoles;
 
-        // One permission check rules them all.
         if (!canView(req.user, assetObj)) {
             await logAudit({ action: 'VIEW_DENIED', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'critical' });
             return res.status(403).json({ error: 'Forbidden: not authorized to view this asset.' });
@@ -393,7 +392,6 @@ exports.viewAsset = async (req, res) => {
             await asset.save();
         }
 
-        // Target specific version if requested via query (e.g., ?v=2), else use the latest
         const reqVersion = parseInt(req.query.v, 10);
         let targetVersionData;
 
@@ -404,18 +402,23 @@ exports.viewAsset = async (req, res) => {
             targetVersionData = asset.versions[asset.versions.length - 1];
         }
 
+        // Determine preview kind for the frontend iframe/img tag
         const ext = extOf(asset.filename);
         const isPdf = ext === 'pdf';
         const isImage = ['jpg', 'jpeg', 'png'].includes(ext);
         const isConvertible = ['doc', 'docx'].includes(ext);
-        const previewable = isPdf || isImage || isConvertible;
-        const previewKind = isPdf ? 'pdf' : isImage ? 'image' : isConvertible ? 'pdf' : 'none';
+
+        // Default to PDF if we aren't sure, so the frontend attempts an iframe render which is most flexible
+        const previewable = isPdf || isImage || isConvertible || true;
+        const previewKind = isImage ? 'image' : 'pdf';
 
         await logAudit({ action: 'VIEW', userId: req.user.id, ip, details: `asset=${asset._id} version=${targetVersionData.version}` });
+
         res.json({
             message: 'Secure view session opened.',
             watermark: `CONFIDENTIAL • ${req.user.email} • ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
-            previewable, previewKind,
+            previewable,
+            previewKind,
             canDownload: canDownload(req.user, assetObj),
             asset: {
                 id: asset._id,
@@ -448,16 +451,36 @@ exports.rawAsset = async (req, res) => {
             return res.status(403).json({ error: 'Forbidden.' });
         }
 
-        const latest = asset.versions[asset.versions.length - 1];
-        if (!latest || !fs.existsSync(latest.path)) return res.status(404).json({ error: 'File data not found.' });
+        // 1. Target the exact version requested by the Traceability UI
+        const reqVersion = parseInt(req.query.v, 10);
+        let targetVersionData;
+
+        if (reqVersion && !isNaN(reqVersion)) {
+            targetVersionData = asset.versions.find(v => v.version === reqVersion);
+        }
+        if (!targetVersionData) {
+            targetVersionData = asset.versions[asset.versions.length - 1];
+        }
+
+        if (!targetVersionData || !fs.existsSync(targetVersionData.path)) {
+            return res.status(404).json({ error: 'File data not found on server.' });
+        }
 
         const wantsDownload = req.query.download === '1' || req.query.download === 'true';
-        const ext = extOf(asset.filename);
         const wmText = `${req.user.email}  ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`;
 
+        // 2. Safely decrypt and validate the buffer
         let plain;
-        try { plain = readEncrypted(latest.path); }
-        catch { await logAudit({ action: 'DECRYPT_FAILED', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'critical' }); return res.status(500).json({ error: 'File could not be decrypted.' }); }
+        try {
+            plain = readEncrypted(targetVersionData.path);
+        } catch {
+            await logAudit({ action: 'DECRYPT_FAILED', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'critical' });
+            return res.status(500).json({ error: 'File could not be decrypted.' });
+        }
+
+        if (!plain || plain.length === 0) {
+            return res.status(500).json({ error: 'The file buffer is empty. The historical upload may have been corrupted.' });
+        }
 
         if (wantsDownload) {
             if (!canDownload(req.user, assetObj)) {
@@ -465,45 +488,68 @@ exports.rawAsset = async (req, res) => {
                 return res.status(403).json({ error: 'Your role is not permitted to download this file.' });
             }
 
-            // Track download metrics
-            const activeLog = asset.accessLogs.find(l => String(l.user) === String(req.user.id) && !l.revokedAt);
+            const activeLog = asset.accessLogs?.find(l => String(l.user) === String(req.user.id) && !l.revokedAt);
             if (activeLog) {
                 activeLog.downloadsCount += 1;
                 await asset.save();
             }
 
-            await logAudit({ action: 'DOWNLOAD', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'warn' });
+            await logAudit({ action: 'DOWNLOAD', userId: req.user.id, ip, details: `asset=${asset._id} v=${targetVersionData.version}`, severity: 'warn' });
             res.setHeader('Content-Type', asset.type || 'application/octet-stream');
             res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(asset.filename)}"`);
             return res.end(plain);
         }
 
-        await logAudit({ action: 'VIEW_STREAM', userId: req.user.id, ip, details: `asset=${asset._id}` });
+        await logAudit({ action: 'VIEW_STREAM', userId: req.user.id, ip, details: `asset=${asset._id} v=${targetVersionData.version}` });
         res.setHeader('Cache-Control', 'private, no-store');
 
-        if (ext === 'pdf') {
-            const bytes = await watermarkPdfBuffer(plain, wmText);
-            res.setHeader('Content-Type', 'application/pdf'); res.setHeader('Content-Disposition', 'inline');
-            return res.end(Buffer.from(bytes));
+        // 3. MAGIC BYTES DETECTION (Ignores the filename extension entirely to prevent crashes)
+        const isPdf = plain.length > 4 && plain[0] === 0x25 && plain[1] === 0x50 && plain[2] === 0x44 && plain[3] === 0x46; // Matches %PDF
+        const isImage = (plain.length > 2 && plain[0] === 0xFF && plain[1] === 0xD8) || // Matches JPEG
+            (plain.length > 8 && plain[0] === 0x89 && plain[1] === 0x50 && plain[2] === 0x4E && plain[3] === 0x47); // Matches PNG
+
+        if (isPdf) {
+            try {
+                const bytes = await watermarkPdfBuffer(plain, wmText);
+                res.setHeader('Content-Type', 'application/pdf');
+                res.setHeader('Content-Disposition', 'inline');
+                return res.end(Buffer.from(bytes));
+            } catch (e) {
+                return res.status(500).json({ error: 'Failed to watermark PDF data.' });
+            }
         }
-        if (['jpg', 'jpeg', 'png'].includes(ext)) {
-            const buf = await watermarkImageBuffer(plain, wmText);
-            res.setHeader('Content-Type', 'image/png'); res.setHeader('Content-Disposition', 'inline');
-            return res.end(buf);
+
+        if (isImage) {
+            try {
+                const buf = await watermarkImageBuffer(plain, wmText);
+                res.setHeader('Content-Type', 'image/png');
+                res.setHeader('Content-Disposition', 'inline');
+                return res.end(buf);
+            } catch (e) {
+                return res.status(500).json({ error: 'Failed to watermark Image data.' });
+            }
         }
+
+        // Fallback for doc/docx routing
+        const ext = extOf(asset.filename);
         if (['doc', 'docx'].includes(ext)) {
             try {
                 const pdfBuf = await convertToPdf(plain, ext);
                 const bytes = await watermarkPdfBuffer(pdfBuf, wmText);
-                res.setHeader('Content-Type', 'application/pdf'); res.setHeader('Content-Disposition', 'inline');
+                res.setHeader('Content-Type', 'application/pdf');
+                res.setHeader('Content-Disposition', 'inline');
                 return res.end(Buffer.from(bytes));
             } catch (e) {
                 console.error('[CONVERT]', e.message);
                 return res.status(422).json({ error: 'Document conversion failed.' });
             }
         }
-        return res.status(415).json({ error: 'Unsupported preview type.' });
-    } catch (err) { console.error('[RAW]', err.message); if (!res.headersSent) res.status(500).json({ error: 'Could not stream file.' }); }
+
+        return res.status(415).json({ error: 'Unsupported preview type or missing file header.' });
+    } catch (err) {
+        console.error('[RAW]', err.message);
+        if (!res.headersSent) res.status(500).json({ error: 'Could not stream file.' });
+    }
 };
 
 exports.uploadNewVersion = async (req, res) => {

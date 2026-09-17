@@ -102,7 +102,7 @@ export default function TraceabilityModal({ assetId, onClose, onView, onDownload
                                                     </button>
                                                 )}
                                                 {onDownload && (
-                                                    <button onClick={() => onDownload(asset._id, asset.filename, v.version)} className="text-tertiary hover:text-tertiary/80 flex items-center gap-1 text-[13px] font-bold transition-colors">
+                                                    <button onClick={() => { onClose(); onDownload(asset._id, asset.filename, v.version); }} className="text-tertiary hover:text-tertiary/80 flex items-center gap-1 text-[13px] font-bold transition-colors">
                                                         <Icon name="download" size={16} /> Download v{v.version}
                                                     </button>
                                                 )}

@@ -69,21 +69,28 @@ export default function Repository() {
   useEffect(() => { setPage(1); }, [categoryId, deptFilter]);
   useEffect(() => { setDeptFilter(''); }, [categoryId]);
 
-  const openView = async (id) => {
+  const openView = async (id, versionNumber = null) => {
     try {
-      const { data } = await api.get(`/assets/${id}/view`);
+      // If a specific version is requested, append ?v= to the URL
+      const url = versionNumber ? `/assets/${id}/view?v=${versionNumber}` : `/assets/${id}/view`;
+      const { data } = await api.get(url);
       setSession(data);
     } catch (err) {
       setMsg(err.response?.data?.error || 'Cannot open secure view.');
     }
   };
 
-  const downloadAsset = async (id, filename) => {
+  const downloadAsset = async (id, filename, versionNumber = null) => {
     try {
-      const res = await api.get(`/assets/${id}/raw`, { params: { download: 1 }, responseType: 'blob' });
+      // Append the v parameter to the backend request
+      const params = { download: 1 };
+      if (versionNumber) params.v = versionNumber;
+
+      const res = await api.get(`/assets/${id}/raw`, { params, responseType: 'blob' });
       const url = URL.createObjectURL(res.data);
       const a = document.createElement('a');
-      a.href = url; a.download = filename;
+      a.href = url;
+      a.download = versionNumber ? `v${versionNumber}_${filename}` : filename;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
     } catch (err) {
@@ -297,6 +304,8 @@ export default function Repository() {
         <TraceabilityModal
           assetId={versionAsset._id}
           onClose={() => setVersionAsset(null)}
+          onView={openView}
+          onDownload={downloadAsset}
         />
       )}
 
