@@ -4,12 +4,14 @@ import { api, useAuth } from '../auth';
 import { useCategories } from '../useCategories';
 import { Icon } from './ui';
 import ProfileModal from './ProfileModal';
+import { io } from 'socket.io-client'; // <-- WebSocket Import
 
 const NAV_STATIC = [
   { to: '/requests', icon: 'pending_actions', label: 'Access Requests', roles: ['Admin', 'Engineering', 'Legal', 'Management'] },
   { to: '/users', icon: 'manage_accounts', label: 'User Management', roles: ['Admin', 'Management'] },
 ];
 const NAV_BOTTOM = [
+  { to: '/repositories', icon: 'create_new_folder', label: 'Manage Repositories', roles: ['Admin'] }, // added from previous step
   { to: '/settings', icon: 'verified_user', label: 'Security Settings', roles: ['Admin'] },
   { to: '/audit', icon: 'terminal', label: 'System Logs', roles: ['Admin'] },
 ];
@@ -62,12 +64,29 @@ export default function Shell({ children, breadcrumb }) {
     } catch { /* ignore */ }
   }, []);
 
-  // Poll notifications periodically + on mount.
+  // 1. Initial Load
   useEffect(() => {
     loadNotifs();
-    const id = setInterval(loadNotifs, 20000);
-    return () => clearInterval(id);
   }, [loadNotifs]);
+
+  // 2. Real-Time Socket Connection (Replaces setInterval)
+  useEffect(() => {
+    if (!user || !user._id) return;
+
+    const socketUrl = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+    const socket = io(socketUrl, { withCredentials: true });
+
+    // Join the private room for this user
+    socket.emit('join', user._id);
+
+    // Listen for instant updates from the backend
+    socket.on('new_notification', () => {
+      loadNotifs(); // Fetch the new notification and bump the red counter instantly
+    });
+
+    // Cleanup on unmount
+    return () => socket.disconnect();
+  }, [user, loadNotifs]);
 
   const openBell = async () => {
     const next = !bellOpen;

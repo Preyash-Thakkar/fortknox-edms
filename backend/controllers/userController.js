@@ -165,3 +165,23 @@ exports.deleteUser = async (req, res) => {
         res.status(400).json({ error: err.message });
     }
 };
+
+exports.restoreUser = async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        user.email = user.email.replace(/^deleted_\d+_/, '');
+        user.active = true;
+        user.deletedAt = undefined;
+
+        await user.save();
+
+        res.json({ message: 'Operator restored successfully', user });
+    } catch (err) {
+        if (err.code === 11000) {
+            return res.status(400).json({ error: 'Cannot restore: Another active user is now using this email.' });
+        }
+        res.status(400).json({ error: err.message });
+    }
+};

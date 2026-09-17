@@ -11,5 +11,5 @@ router.patch('/users/:id/active', authenticate, authorize('Admin'), userControll
 router.post('/users/:id/reset-password', authenticate, authorize('Admin'), userController.resetPassword);
 router.patch('/users/:id', authenticate, authorize('Admin'), userController.updateUser);
 router.delete('/users/:id', authenticate, authorize('Admin'), userController.deleteUser);
-
+router.patch('/users/:id/restore', authenticate, authorize('Admin'), userController.restoreUser);
 module.exports = router;

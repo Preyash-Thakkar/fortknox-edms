@@ -19,7 +19,6 @@ exports.createRequest = async (req, res) => {
         const asset = await Asset.findById(assetId).populate('department');
         if (!asset) return res.status(404).json({ error: 'Asset not found.' });
 
-        // Specific Rule: Only the owner (uploader) can request a delete
         if (kind === 'delete') {
             if (String(asset.uploadedBy) !== String(req.user.id) && req.user.role !== 'Admin') {
                 return res.status(403).json({ error: 'Only the document owner or an Admin can request a deletion.' });
@@ -29,16 +28,13 @@ exports.createRequest = async (req, res) => {
         const assetObj = asset.toObject();
         assetObj._deptAllowedRoles = asset.department?.allowedRoles;
 
-        // Check if user already has the requested permission
         if (kind === 'view' && canView(req.user, assetObj)) return res.status(400).json({ error: 'You already have view access.' });
         if (kind === 'download' && canDownload(req.user, assetObj)) return res.status(400).json({ error: 'You already have download access.' });
 
-        // Prevent duplicate pending requests for the same action on the same asset
         if (await AccessRequest.findOne({ asset: assetId, requestedBy: req.user.id, kind, status: 'Pending' })) {
             return res.status(409).json({ error: 'A pending request for this action already exists.' });
         }
 
-        // Determine target department from the asset's department or category context
         const targetDept = asset.department?.name || 'Electronics';
 
         const reqDoc = await AccessRequest.create({
@@ -51,7 +47,6 @@ exports.createRequest = async (req, res) => {
 
         await logAudit({ action: 'ACCESS_REQUESTED', userId: req.user.id, ip, details: `asset=${assetId} kind=${kind}`, severity: 'warn' });
 
-        // Targeted Routing: Notify Admins AND the specific Department Heads managing targetDept
         const approvers = await User.find({
             $or: [
                 { role: 'Admin', active: true },
@@ -59,7 +54,9 @@ exports.createRequest = async (req, res) => {
             ]
         }).select('_id').lean();
 
+        const io = req.app.get('io');
         const approverIds = [...new Set(approvers.map(a => String(a._id)))];
+
         for (const approverId of approverIds) {
             await notify(
                 approverId,
@@ -67,6 +64,9 @@ exports.createRequest = async (req, res) => {
                 '/access-requests'
             );
 
+            if (io) {
+                io.to(String(approverId)).emit('new_notification');
+            }
         }
         res.status(201).json({ message: 'Request submitted to department head.', request: reqDoc });
     } catch (err) {
@@ -81,12 +81,10 @@ exports.getRequests = async (req, res) => {
         if (req.user.role === 'Admin') {
             filter = {};
         } else if (req.user.role === 'Management') {
-            // Department heads see requests targeted to their managed departments OR requested by themselves
             const userDoc = await User.findById(req.user.id).select('headOfDepartments').lean();
             const managed = userDoc?.headOfDepartments || [];
             filter = { $or: [{ targetDepartment: { $in: managed } }, { requestedBy: req.user.id }] };
         } else {
-            // Regular team members only see their own requests
             filter = { requestedBy: req.user.id };
         }
 
@@ -116,7 +114,6 @@ exports.decideRequest = async (req, res) => {
         if (!reqDoc) return res.status(404).json({ error: 'Request not found.' });
         if (reqDoc.status !== 'Pending') return res.status(409).json({ error: 'Request already decided.' });
 
-        // Authorization check for decider: Must be Admin OR Head of the request's targetDepartment
         if (req.user.role !== 'Admin') {
             const decider = await User.findById(req.user.id).select('role headOfDepartments').lean();
             const managed = decider?.headOfDepartments || [];
@@ -134,7 +131,7 @@ exports.decideRequest = async (req, res) => {
             const asset = await Asset.findById(reqDoc.asset._id);
             if (asset) {
                 const targetUserId = reqDoc.requestedBy._id;
-                const kind = reqDoc.kind; // 'view', 'download', 'edit'
+                const kind = reqDoc.kind;
 
                 const listName = (kind === 'download') ? 'userDownloadGrants' : 'userViewGrants';
 
@@ -142,12 +139,10 @@ exports.decideRequest = async (req, res) => {
                     asset[listName].push(targetUserId);
                 }
 
-                // If download is granted, ensure view is also granted
                 if (kind === 'download' && !asset.userViewGrants.includes(targetUserId)) {
                     asset.userViewGrants.push(targetUserId);
                 }
 
-                // Push tracking entry into accessLogs
                 asset.accessLogs.push({
                     user: targetUserId,
                     kind: kind,
@@ -177,8 +172,13 @@ exports.decideRequest = async (req, res) => {
         await notify(
             reqDoc.requestedBy._id,
             `${decision}: Your [${reqDoc.kind.toUpperCase()}] request for "${reqDoc.asset.filename}" has been ${decision.toLowerCase()}.`,
-            targetRoute // Routes directly to the specific repository
+            targetRoute
         );
+
+        const io = req.app.get('io');
+        if (io) {
+            io.to(String(reqDoc.requestedBy._id)).emit('new_notification');
+        }
 
         res.json({ message: `Request ${decision.toLowerCase()}.`, request: reqDoc });
     } catch (err) {

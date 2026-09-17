@@ -15,37 +15,37 @@ const { SENSITIVITY, DEPARTMENTS } = require('../constants');
 
 exports.getStats = async (req, res) => {
     try {
-        const isAdmin = req.user.role === 'Admin';
-        const [totalAssets, pendingReqs, criticalEvents] = await Promise.all([
-            Asset.countDocuments({ deletedAt: null }),
-            AccessRequest.countDocuments({ status: 'Pending' }),
-            AuditLog.countDocuments({ severity: 'critical' }),
-        ]);
+        // 1. Get raw counts
+        const totalAssets = await Asset.countDocuments();
 
-        let accessible = totalAssets;
-        if (!isAdmin) {
-            const role = req.user.role;
-            const uid = new mongoose.Types.ObjectId(req.user.id);
-            const result = await Asset.aggregate([
-                { $match: { deletedAt: null } },
-                { $lookup: { from: 'departments', localField: 'department', foreignField: '_id', as: '_dept' } },
-                { $addFields: { _deptAllowed: { $ifNull: [{ $arrayElemAt: ['$_dept.allowedRoles', 0] }, []] } } },
-                {
-                    $match: {
-                        $or: [
-                            { allowedRoles: role, $or: [{ _deptAllowed: { $size: 0 } }, { _deptAllowed: role }] },
-                            { userViewGrants: uid },
-                        ],
-                    },
-                },
-                { $count: 'n' },
-            ]);
-            accessible = result[0]?.n || 0;
+        // 2. Fetch all assets to evaluate true cryptographic access
+        const allAssets = await Asset.find().populate('department');
+
+        // 3. Filter using our strict Zero-Trust logic
+        const accessibleAssets = allAssets.filter(asset => canView(req.user, asset)).length;
+
+        // 4. Scoped Pending Requests (Heads see their dept requests, Admins see all)
+        let pendingQuery = { status: 'Pending' };
+        if (req.user.role === 'Management' && req.user.headOfDepartments?.length > 0) {
+            // Find assets belonging to their departments
+            const deptAssets = await Asset.find({ departmentName: { $in: req.user.headOfDepartments } }).select('_id');
+            pendingQuery.asset = { $in: deptAssets.map(a => a._id) };
         }
-        res.json({ totalAssets, accessibleAssets: accessible, pendingRequests: pendingReqs, criticalEvents });
-    } catch (err) { console.error('[STATS]', err.message); res.status(500).json({ error: 'Could not load stats.' }); }
-};
+        const pendingRequests = await AccessRequest.countDocuments(pendingQuery);
 
+        // 5. Critical Events (Fallback to 0 if AuditLog isn't wired yet)
+        const criticalEvents = await AuditLog.countDocuments({ severity: 'CRITICAL' }) || 0;
+
+        res.json({
+            totalAssets,
+            accessibleAssets,
+            pendingRequests,
+            criticalEvents
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch dashboard stats.' });
+    }
+};
 exports.getAssets = async (req, res) => {
     try {
         const { category, department, q, trashed } = req.query;
