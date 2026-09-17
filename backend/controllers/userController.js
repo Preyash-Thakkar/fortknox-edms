@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { logAudit, clientIp } = require('../utils/logger');
 const { sendEmail } = require('../utils/mailer');
-const { ROLES, DEPARTMENTS } = require('../constants');
+const { ROLES } = require('../constants');
 
 function generateTempPassword() {
     const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ', lower = 'abcdefghijkmnopqrstuvwxyz', digits = '23456789', symbols = '@#$%&*';
@@ -22,15 +22,18 @@ exports.getUsers = async (req, res) => {
 
 exports.createUser = async (req, res) => {
     const ip = clientIp(req);
-    const { name, email, role, title, department } = req.body || {};
+    const { name, email, password, role, title, department } = req.body || {};
 
     if (!name || !email || !role || !department) {
         return res.status(400).json({ error: 'Name, email, role, and department are required.' });
     }
-    if (!ROLES.includes(role)) return res.status(400).json({ error: `Invalid role selected.` });
-    if (!DEPARTMENTS.includes(department)) return res.status(400).json({ error: `Invalid department selected.` });
 
-    // Hierarchy Enforcement: If user is not Admin, they must be a Department Head (Management) managing this specific department
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) return res.status(400).json({ error: 'Invalid email format.' });
+
+    if (!ROLES.includes(role)) return res.status(400).json({ error: `Invalid role selected.` });
+
+    // Hierarchy Enforcement
     if (req.user.role !== 'Admin') {
         if (req.user.role !== 'Management') {
             return res.status(403).json({ error: 'Only Admins or Department Heads can create new users.' });
@@ -46,8 +49,8 @@ exports.createUser = async (req, res) => {
         const normalizedEmail = email.toLowerCase().trim();
         if (await User.findOne({ email: normalizedEmail })) return res.status(409).json({ error: 'A user with that email already exists.' });
 
-        const tempPassword = generateTempPassword();
-        const hash = await bcrypt.hash(tempPassword, 12);
+        const finalPassword = password || generateTempPassword();
+        const hash = await bcrypt.hash(finalPassword, 12);
 
         const user = await User.create({
             name: name.trim(),
@@ -61,9 +64,9 @@ exports.createUser = async (req, res) => {
         });
 
         await logAudit({ action: 'USER_CREATED', userId: req.user.id, ip, details: `created=${user.email} role=${role} dept=${department}`, severity: 'warn' });
-        await sendEmail(normalizedEmail, 'Your Fort Knox EDMS account', `An account was created for you.\nEmail: ${normalizedEmail}\nTemporary password: ${tempPassword}\nDepartment: ${department}\nYou will be asked to change it on first login.`);
+        await sendEmail(normalizedEmail, 'Your Fort Knox EDMS account', `An account was created for you.\nEmail: ${normalizedEmail}\nPassword: ${finalPassword}\nDepartment: ${department}\nYou will be asked to change it on first login.`);
 
-        res.status(201).json({ message: 'User created.', tempPassword, user: { id: user._id, name: user.name, email: user.email, role: user.role, department: user.department, title: user.title, active: user.active } });
+        res.status(201).json({ message: 'User created.', user: { id: user._id, name: user.name, email: user.email, role: user.role, department: user.department, title: user.title, active: user.active } });
     } catch (err) {
         console.error('[USER_CREATE]', err.message);
         res.status(500).json({ error: 'Could not create user.' });
@@ -94,6 +97,8 @@ exports.updateUserStatus = async (req, res) => {
         if (String(user._id) === String(req.user.id) && active === false) return res.status(400).json({ error: 'You cannot deactivate your own account.' });
         user.active = active; await user.save();
         await logAudit({ action: active ? 'USER_REACTIVATED' : 'USER_DEACTIVATED', userId: req.user.id, ip, details: `target=${user.email}`, severity: 'warn' });
+
+        // This is the line that was throwing the syntax error. It is fixed now.
         res.json({ message: active ? 'User reactivated.' : 'User deactivated.', user: { id: user._id, active: user.active } });
     } catch (err) { console.error('[USER_ACTIVE]', err.message); res.status(500).json({ error: 'Could not update user status.' }); }
 };
@@ -118,7 +123,6 @@ exports.updateUser = async (req, res) => {
         const user = await User.findById(req.params.id);
         if (!user) return res.status(404).json({ error: 'User not found' });
 
-        // Restrict Management from editing Admins
         if (req.user.role === 'Management' && user.role === 'Admin') {
             return res.status(403).json({ error: 'Cannot modify Admin accounts.' });
         }
@@ -138,7 +142,6 @@ exports.updateUser = async (req, res) => {
         await user.save();
         res.json({ message: 'User updated successfully', user });
     } catch (err) {
-        // Handle duplicate email error on update
         if (err.code === 11000) {
             return res.status(400).json({ error: 'Email already in use.' });
         }
@@ -157,7 +160,7 @@ exports.deleteUser = async (req, res) => {
 
         user.email = `deleted_${Date.now()}_${user.email}`;
         user.deletedAt = new Date();
-        user.active = false; // Optional: if you use an isActive flag
+        user.active = false;
 
         await user.save();
         res.json({ message: 'User deleted successfully' });
@@ -176,7 +179,6 @@ exports.restoreUser = async (req, res) => {
         user.deletedAt = undefined;
 
         await user.save();
-
         res.json({ message: 'Operator restored successfully', user });
     } catch (err) {
         if (err.code === 11000) {

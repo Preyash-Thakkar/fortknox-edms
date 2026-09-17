@@ -23,10 +23,10 @@ export default function Repository() {
   const [showUpload, setShowUpload] = useState(false);
   const [versionAsset, setVersionAsset] = useState(null);
   const [adminAsset, setAdminAsset] = useState(null);
-  const [checkInAsset, setCheckInAsset] = useState(null); // <-- NEW STATE FOR SMART VERSIONING
+  const [checkInAsset, setCheckInAsset] = useState(null);
   const [bulkMode, setBulkMode] = useState(false);
   const [msg, setMsg] = useState('');
-  const [deptFilter, setDeptFilter] = useState('');     // '' = all departments
+  const [deptFilter, setDeptFilter] = useState('');
   const [showFilter, setShowFilter] = useState(false);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -34,7 +34,7 @@ export default function Repository() {
   const [requestingAsset, setRequestingAsset] = useState(null);
   const PAGE_SIZE = 25;
 
-  const category = categories.find((c) => c._id === categoryId);
+  const category = categories.find((c) => c._id === categoryId || c.id === categoryId);
   const departments = category?.departments || [];
   const canUpload = user.role === 'Admin' || (category && category.allowedRoles.includes(user.role));
 
@@ -48,9 +48,15 @@ export default function Repository() {
         api.get('/assets', { params }),
         api.get('/stats'),
       ]);
-      setAssets(a.data.assets);
+
+      const normalizedAssets = (a.data.assets || []).map(ast => ({
+        ...ast,
+        _id: ast._id || ast.id
+      }));
+
+      setAssets(normalizedAssets);
       setTotalPages(a.data.totalPages || 1);
-      setTotal(a.data.total || a.data.assets.length);
+      setTotal(a.data.total || normalizedAssets.length);
       setStats(s.data);
     } catch (err) {
       setMsg(err.response?.data?.error || 'Failed to load.');
@@ -60,9 +66,7 @@ export default function Repository() {
   }, [categoryId, deptFilter, page]);
 
   useEffect(() => { load(); }, [load]);
-  // Reset to page 1 when the category or department filter changes.
   useEffect(() => { setPage(1); }, [categoryId, deptFilter]);
-  // Reset the department filter when switching categories.
   useEffect(() => { setDeptFilter(''); }, [categoryId]);
 
   const openView = async (id) => {
@@ -74,7 +78,6 @@ export default function Repository() {
     }
   };
 
-  // Direct download from the table (only shown when the user's role may download).
   const downloadAsset = async (id, filename) => {
     try {
       const res = await api.get(`/assets/${id}/raw`, { params: { download: 1 }, responseType: 'blob' });
@@ -113,14 +116,13 @@ export default function Repository() {
             icon="filter_list"
             onClick={() => setShowFilter((v) => !v)}
           >
-            {deptFilter ? `Dept: ${departments.find((d) => d._id === deptFilter)?.name || 'Filter'}` : 'Filter'}
+            {deptFilter ? `Dept: ${departments.find((d) => (d._id || d.id) === deptFilter)?.name || 'Filter'}` : 'Filter'}
           </Button>
           {canUpload && <Button icon="upload_file" onClick={() => { setBulkMode(false); setShowUpload(true); }}>Upload Asset</Button>}
           {canUpload && <Button variant="secondary" icon="library_add" onClick={() => { setBulkMode(true); setShowUpload(true); }}>Bulk Upload</Button>}
         </div>
       </div>
 
-      {/* Filter panel — filters the list by department within this category */}
       {showFilter && (
         <div className="bg-surface-container-lowest border border-outline-variant rounded-lg p-md mb-lg flex items-center gap-md flex-wrap">
           <span className="font-label-lg text-label-lg text-on-surface-variant uppercase tracking-widest">Department</span>
@@ -133,9 +135,9 @@ export default function Repository() {
           </button>
           {departments.map((d) => (
             <button
-              key={d._id}
-              onClick={() => setDeptFilter(d._id)}
-              className={`px-3 py-1.5 rounded text-label-lg font-bold border transition-all ${deptFilter === d._id ? 'bg-primary text-on-primary border-primary' : 'border-outline-variant text-on-surface-variant hover:border-primary'
+              key={d._id || d.id}
+              onClick={() => setDeptFilter(d._id || d.id)}
+              className={`px-3 py-1.5 rounded text-label-lg font-bold border transition-all ${deptFilter === (d._id || d.id) ? 'bg-primary text-on-primary border-primary' : 'border-outline-variant text-on-surface-variant hover:border-primary'
                 }`}
             >
               {d.name}
@@ -170,85 +172,93 @@ export default function Repository() {
           <EmptyState icon="folder_off" title="No assets here yet" subtitle="Uploaded assets will appear in this repository." />
         ) : (
           <div className="divide-y divide-outline-variant">
-            {assets.map((a, idx) => (
-              <div
-                key={a._id}
-                className={`grid grid-cols-12 gap-gutter px-md py-3 items-center group transition-colors hover:bg-surface-container ${idx % 2 ? 'bg-surface-container-low/40' : ''
-                  }`}
-              >
-                <div className="col-span-4 flex items-center gap-3 min-w-0">
-                  <FileTypeIcon filename={a.filename} type={a.type} />
-                  <span className="font-body-md text-body-md font-semibold text-primary truncate">{a.filename}</span>
-                  {a.currentVersion > 1 && (
-                    <span className="font-data-mono text-[11px] text-on-surface-variant shrink-0">v{a.currentVersion}</span>
-                  )}
-                </div>
-                <div className="col-span-2">
-                  {a.department ? (
-                    <span className="px-2 py-0.5 rounded-sm bg-surface-container-high text-on-surface-variant text-[11px] font-semibold">{a.department.name}</span>
-                  ) : (
-                    <span className="text-on-surface-variant text-[12px]">—</span>
-                  )}
-                </div>
-                <div className="col-span-1 font-data-mono text-data-mono text-on-surface-variant">{bytes(a.size)}</div>
-                <div className="col-span-2"><SensitivityBadge level={a.sensitivity} /></div>
-                <div className="col-span-2">
-                  {a.accessible ? (
-                    <span className="flex items-center gap-1.5 text-on-tertiary-container font-label-md text-label-md">
-                      <Icon name="check_circle" size={16} fill={1} /> Accessible
-                    </span>
-                  ) : a.requestPending ? (
-                    <span className="flex items-center gap-1.5 text-secondary font-label-md text-label-md">
-                      <Icon name="hourglass_top" size={16} /> Requested
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1.5 text-error font-label-md text-label-md">
-                      <Icon name="lock" size={16} fill={1} /> Restricted
-                    </span>
-                  )}
-                </div>
-                <div className="col-span-1 flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {a.accessible && (
-                    <button title="Secure View" onClick={() => openView(a._id)} className="p-2 rounded hover:bg-surface-container-high text-primary">
-                      <Icon name="visibility" size={20} />
-                    </button>
-                  )}
-                  {a.accessible && a.canDownload && (
-                    <button title="Download" onClick={() => downloadAsset(a._id, a.filename)} className="p-2 rounded hover:bg-surface-container-high text-tertiary">
-                      <Icon name="download" size={20} />
-                    </button>
-                  )}
+            {assets.map((a, idx) => {
+              // ROBUST VERSION CHECK: Forces the button to appear if you are Admin, Management, or the original Uploader
+              const uploaderId = a.uploadedBy?._id || a.uploadedBy;
+              const currentUserId = user?._id || user?.id;
+              const isOwner = uploaderId && currentUserId && String(uploaderId) === String(currentUserId);
+              const isHead = user?.role === 'Management';
+              const isAdmin = user?.role === 'Admin';
+              const canVersion = a.canEdit || isAdmin || isHead || isOwner;
 
-                  {/* --- NEW: CHECK-IN VERSION BUTTON --- */}
-                  {a.accessible && (a.canEdit || user.role === 'Admin') && (
-                    <button title="Check-In New Version" onClick={() => setCheckInAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-primary transition-colors">
-                      <Icon name="publish" size={20} />
-                    </button>
-                  )}
+              return (
+                <div
+                  key={a._id}
+                  className={`grid grid-cols-12 gap-gutter px-md py-3 items-center group transition-colors hover:bg-surface-container ${idx % 2 ? 'bg-surface-container-low/40' : ''}`}
+                >
+                  <div className="col-span-4 flex items-center gap-3 min-w-0">
+                    <FileTypeIcon filename={a.filename} type={a.type} />
+                    <span className="font-body-md text-body-md font-semibold text-primary truncate">{a.filename}</span>
+                    {a.currentVersion > 1 && (
+                      <span className="font-data-mono text-[11px] text-on-surface-variant shrink-0">v{a.currentVersion}</span>
+                    )}
+                  </div>
+                  <div className="col-span-2">
+                    {a.department ? (
+                      <span className="px-2 py-0.5 rounded-sm bg-surface-container-high text-on-surface-variant text-[11px] font-semibold">{a.department.name}</span>
+                    ) : (
+                      <span className="text-on-surface-variant text-[12px]">—</span>
+                    )}
+                  </div>
+                  <div className="col-span-1 font-data-mono text-data-mono text-on-surface-variant">{bytes(a.size)}</div>
+                  <div className="col-span-2"><SensitivityBadge level={a.sensitivity} /></div>
+                  <div className="col-span-2">
+                    {a.accessible ? (
+                      <span className="flex items-center gap-1.5 text-on-tertiary-container font-label-md text-label-md">
+                        <Icon name="check_circle" size={16} fill={1} /> Accessible
+                      </span>
+                    ) : a.requestPending ? (
+                      <span className="flex items-center gap-1.5 text-secondary font-label-md text-label-md">
+                        <Icon name="hourglass_top" size={16} /> Requested
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1.5 text-error font-label-md text-label-md">
+                        <Icon name="lock" size={16} fill={1} /> Restricted
+                      </span>
+                    )}
+                  </div>
+                  <div className="col-span-1 flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {a.accessible && (
+                      <button title="Secure View" onClick={() => openView(a._id)} className="p-2 rounded hover:bg-surface-container-high text-primary">
+                        <Icon name="visibility" size={20} />
+                      </button>
+                    )}
+                    {a.accessible && a.canDownload && (
+                      <button title="Download" onClick={() => downloadAsset(a._id, a.filename)} className="p-2 rounded hover:bg-surface-container-high text-tertiary">
+                        <Icon name="download" size={20} />
+                      </button>
+                    )}
 
-                  {a.accessible && (
-                    <button title="Version History" onClick={() => setVersionAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-secondary">
-                      <Icon name="history" size={20} />
-                    </button>
-                  )}
-                  {!a.accessible && !a.requestPending && (
-                    <button onClick={() => requestAccess(a)} className="border px-3 py-1 rounded text-sm hover:bg-gray-100 flex items-center gap-1">
-                      <Icon name="key" /> Request
-                    </button>
-                  )}
-                  {user.role === 'Admin' && (
-                    <button title="Manage (admin)" onClick={() => setAdminAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-on-surface-variant">
-                      <Icon name="settings" size={20} />
-                    </button>
-                  )}
+                    {/* Fixed Check-In Button Logic */}
+                    {a.accessible && canVersion && (
+                      <button title="Check-In New Version" onClick={() => setCheckInAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-primary transition-colors">
+                        <Icon name="publish" size={20} />
+                      </button>
+                    )}
+
+                    {a.accessible && (
+                      <button title="Version History" onClick={() => setVersionAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-secondary">
+                        <Icon name="history" size={20} />
+                      </button>
+                    )}
+                    {!a.accessible && !a.requestPending && (
+                      <button onClick={() => requestAccess(a)} className="border px-3 py-1 rounded text-sm hover:bg-gray-100 flex items-center gap-1">
+                        <Icon name="key" /> Request
+                      </button>
+                    )}
+                    {isAdmin && (
+                      <button title="Manage (admin)" onClick={() => setAdminAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-on-surface-variant">
+                        <Icon name="settings" size={20} />
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
 
-      {/* Pagination */}
       {!loading && total > 0 && (
         <div className="flex items-center justify-between mt-md">
           <span className="font-body-sm text-body-sm text-on-surface-variant">
@@ -271,7 +281,6 @@ export default function Repository() {
         />
       )}
 
-      {/* --- NEW: VERSION CHECK-IN MODAL --- */}
       {checkInAsset && (
         <VersionModal
           asset={checkInAsset}
@@ -284,7 +293,13 @@ export default function Repository() {
         />
       )}
 
-      {versionAsset && <TraceabilityModal asset={versionAsset} onClose={() => setVersionAsset(null)} />}
+      {versionAsset && (
+        <TraceabilityModal
+          assetId={versionAsset._id}
+          onClose={() => setVersionAsset(null)}
+        />
+      )}
+
       {adminAsset && (
         <AssetAdminModal
           asset={adminAsset}

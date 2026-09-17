@@ -26,6 +26,8 @@ export default function UserModal({ userToEdit, onClose, onSaved }) {
         title: userToEdit?.title || '',
     });
 
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [showPassword, setShowPassword] = useState(false);
     const [loading, setLoading] = useState(false);
     const [err, setErr] = useState('');
 
@@ -34,12 +36,13 @@ export default function UserModal({ userToEdit, onClose, onSaved }) {
         setLoading(true);
         setErr('');
         try {
+            // Frontend validation checks
+            if (!userToEdit && !formData.password) return setErr('Password is required for new users.');
+            if (formData.password && formData.password !== confirmPassword) return setErr('Passwords do not match.');
+
             if (userToEdit) {
-                // Update user (if password is blank, backend should ignore it)
                 await api.patch(`/users/${userToEdit._id}`, formData);
             } else {
-                // Create user
-                if (!formData.password) return setErr('Password is required for new users.');
                 await api.post('/users', formData);
             }
             onSaved();
@@ -58,7 +61,7 @@ export default function UserModal({ userToEdit, onClose, onSaved }) {
                         <Icon name={userToEdit ? 'manage_accounts' : 'person_add'} />
                         {userToEdit ? 'Edit Operator' : 'Provision New Operator'}
                     </h3>
-                    <button onClick={onClose} className="p-1.5 rounded hover:bg-surface-container-high"><Icon name="close" /></button>
+                    <button onClick={onClose} className="p-1.5 rounded hover:bg-surface-container-high transition-colors"><Icon name="close" /></button>
                 </div>
 
                 <form onSubmit={submit} className="p-lg space-y-md">
@@ -74,11 +77,42 @@ export default function UserModal({ userToEdit, onClose, onSaved }) {
                         <input required type="email" value={formData.email} onChange={e => setFormData({ ...formData, email: e.target.value })} className="w-full px-3 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md" />
                     </div>
 
-                    <div>
-                        <label className="font-label-lg text-label-lg text-on-surface-variant block mb-1">
-                            {userToEdit ? 'RESET PASSWORD (leave blank to keep current)' : 'INITIAL PASSWORD'}
-                        </label>
-                        <input type="password" value={formData.password} onChange={e => setFormData({ ...formData, password: e.target.value })} className="w-full px-3 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md" placeholder="••••••••" />
+                    <div className="grid grid-cols-1 gap-md">
+                        <div>
+                            <label className="font-label-lg text-label-lg text-on-surface-variant block mb-1">
+                                {userToEdit ? 'RESET PASSWORD (leave blank to keep current)' : 'INITIAL PASSWORD'}
+                            </label>
+                            <div className="relative">
+                                <input
+                                    type={showPassword ? "text" : "password"}
+                                    value={formData.password}
+                                    onChange={e => setFormData({ ...formData, password: e.target.value })}
+                                    onPaste={e => e.preventDefault()}
+                                    className="w-full pl-3 pr-10 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md placeholder:text-on-surface-variant/40"
+                                    placeholder="Enter secure password"
+                                />
+                                <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-primary transition-colors">
+                                    <Icon name={showPassword ? "visibility_off" : "visibility"} size={18} />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Only show Confirm Password if they are typing a password */}
+                        {formData.password.length > 0 && (
+                            <div>
+                                <label className="font-label-lg text-label-lg text-on-surface-variant block mb-1">CONFIRM PASSWORD</label>
+                                <div className="relative">
+                                    <input
+                                        type={showPassword ? "text" : "password"}
+                                        value={confirmPassword}
+                                        onChange={e => setConfirmPassword(e.target.value)}
+                                        onPaste={e => e.preventDefault()}
+                                        className="w-full pl-3 pr-10 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md placeholder:text-on-surface-variant/40"
+                                        placeholder="Confirm secure password"
+                                    />
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     <div className="grid grid-cols-2 gap-md">

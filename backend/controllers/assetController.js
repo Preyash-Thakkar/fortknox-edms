@@ -122,7 +122,7 @@ exports.uploadAsset = async (req, res) => {
         const enc = ingestUpload(req.file.path);
         const fType = fileTypeLabel(req.file.originalname);
 
-        // Smart Versioning: If assetId is provided, upload as a new version
+        // Smart Versioning
         if (assetId) {
             const asset = await Asset.findById(assetId);
             if (!asset) { fs.unlink(enc.path, () => { }); return res.status(404).json({ error: 'Asset not found.' }); }
@@ -160,13 +160,16 @@ exports.uploadAsset = async (req, res) => {
             fileType: fType || '',
             category: category._id,
             department: departmentRef,
-            departmentName: DEPARTMENTS.includes(deptName) ? deptName : 'Electronics',
+            departmentName: deptName, // Fixed static bypass
             sensitivity: SENSITIVITY.includes(sensitivity) ? sensitivity : 'Internal',
             allowedRoles: category.allowedRoles,
             downloadRoles: category.downloadRoles || [],
             currentVersion: 1,
             versions: [{ version: 1, path: enc.path, size: enc.size, hash: enc.hash, uploadedBy: req.user.id, note: note || 'Initial version' }],
             uploadedBy: req.user.id,
+            userViewGrants: [req.user.id],     // Explicit access grant
+            userDownloadGrants: [req.user.id], // Explicit access grant
+            userEditGrants: [req.user.id]      // Explicit access grant
         });
 
         await logAudit({ action: 'UPLOAD', userId: req.user.id, ip, details: `asset=${asset._id} file=${asset.filename} dept=${deptName}` });
@@ -204,6 +207,9 @@ exports.bulkUpload = async (req, res) => {
                 allowedRoles: category.allowedRoles, downloadRoles: category.downloadRoles || [],
                 currentVersion: 1, versions: [{ version: 1, path: enc.path, size: enc.size, hash: enc.hash, uploadedBy: req.user.id, note: 'Initial version' }],
                 uploadedBy: req.user.id,
+                userViewGrants: [req.user.id],     // Explicit access grant
+                userDownloadGrants: [req.user.id], // Explicit access grant
+                userEditGrants: [req.user.id]      // Explicit access grant
             });
             created.push(asset._id);
         }
@@ -548,21 +554,27 @@ exports.uploadNewVersion = async (req, res) => {
 
 exports.getAssetTraceability = async (req, res) => {
     try {
+        const Asset = require('../models/Asset');
+        const AuditLog = require('../models/AuditLog');
+
         const asset = await Asset.findById(req.params.id)
             .populate('uploadedBy', 'name email role')
             .populate('history.uploadedBy', 'name email role');
 
         if (!asset) return res.status(404).json({ error: 'Asset not found.' });
-        if (req.user.role !== 'Admin' && req.user.role !== 'Management' && String(asset.uploadedBy._id) !== String(req.user.id)) {
-            return res.status(403).json({ error: 'Not authorized to view traceability logs for this asset.' });
+
+        if (req.user.role !== 'Admin' && req.user.role !== 'Management' && String(asset.uploadedBy?._id || asset.uploadedBy) !== String(req.user.id || req.user._id)) {
+            return res.status(403).json({ error: 'Not authorized to view traceability logs.' });
         }
+
+        // FIXED: Using 'userId' to match your AuditLog schema instead of 'actor'
         const logs = await AuditLog.find({
             $or: [
                 { asset: asset._id },
                 { details: { $regex: String(asset._id) } }
             ]
         })
-            .populate('actor', 'name email role')
+            .populate('userId', 'name email role')
             .sort({ createdAt: -1 });
 
         res.json({

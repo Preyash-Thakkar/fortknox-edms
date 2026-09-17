@@ -6,7 +6,7 @@ export default function TraceabilityModal({ assetId, onClose }) {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    const [tab, setTab] = useState('versions'); // 'versions' or 'logs'
+    const [tab, setTab] = useState('versions');
 
     useEffect(() => {
         api.get(`/assets/${assetId}/traceability`)
@@ -41,7 +41,6 @@ export default function TraceabilityModal({ assetId, onClose }) {
 
     const { asset, logs } = data;
 
-    // Combine current version and history into one sorted array
     const allVersions = [
         { ...asset, isCurrent: true },
         ...(asset.history || []).map(h => ({ ...h, isCurrent: false }))
@@ -51,7 +50,6 @@ export default function TraceabilityModal({ assetId, onClose }) {
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
             <div className="bg-surface-container-lowest rounded-lg border border-outline-variant shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
 
-                {/* Header */}
                 <div className="flex items-center justify-between px-lg py-4 border-b border-outline-variant shrink-0">
                     <div>
                         <h3 className="font-headline-sm text-headline-sm text-primary flex items-center gap-2">
@@ -64,7 +62,6 @@ export default function TraceabilityModal({ assetId, onClose }) {
                     <button onClick={onClose} className="p-1.5 rounded hover:bg-surface-container-high transition-colors"><Icon name="close" /></button>
                 </div>
 
-                {/* Tabs */}
                 <div className="flex bg-surface-container-low px-lg py-2 border-b border-outline-variant shrink-0 gap-2">
                     <button onClick={() => setTab('versions')} className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${tab === 'versions' ? 'bg-white shadow text-primary' : 'text-on-surface-variant hover:text-primary'}`}>
                         Version History ({allVersions.length})
@@ -74,7 +71,6 @@ export default function TraceabilityModal({ assetId, onClose }) {
                     </button>
                 </div>
 
-                {/* Content Area */}
                 <div className="flex-1 overflow-y-auto p-lg">
 
                     {tab === 'versions' && (
@@ -105,15 +101,16 @@ export default function TraceabilityModal({ assetId, onClose }) {
                             {logs.map(log => (
                                 <div key={log._id} className="py-3 flex gap-4 hover:bg-surface-container-low transition-colors px-2 rounded">
                                     <div className="w-40 shrink-0 text-on-surface-variant">
-                                        {new Date(log.createdAt).toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                        {new Date(log.createdAt || log.timestamp).toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                                     </div>
                                     <div className={`w-40 shrink-0 font-bold ${log.severity === 'CRITICAL' ? 'text-error' : log.severity === 'WARN' ? 'text-secondary' : 'text-tertiary'}`}>
                                         {log.action}
                                     </div>
+                                    {/* FIXED: Reading from userId instead of actor */}
                                     <div className="w-48 shrink-0 text-on-surface font-semibold truncate">
-                                        {log.actor?.name || 'System'}
+                                        {log.userId?.name || log.userId?.email || 'System'}
                                     </div>
-                                    <div className="flex-1 text-on-surface-variant truncate">
+                                    <div className="flex-1 text-on-surface-variant truncate" title={log.details}>
                                         {log.details.replace(`asset=${asset._id}`, '').trim()}
                                     </div>
                                 </div>
@@ -126,7 +123,6 @@ export default function TraceabilityModal({ assetId, onClose }) {
 
                 </div>
 
-                {/* Footer */}
                 <div className="px-lg py-3 border-t border-outline-variant bg-surface-container-lowest flex justify-end">
                     <Button variant="ghost" onClick={onClose}>Close Report</Button>
                 </div>
