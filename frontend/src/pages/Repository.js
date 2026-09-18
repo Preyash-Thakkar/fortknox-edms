@@ -165,12 +165,12 @@ export default function Repository() {
 
       <div className="bg-surface-container-lowest border border-outline-variant rounded-lg shadow-sm overflow-hidden">
         <div className="grid grid-cols-12 gap-gutter px-md py-3 bg-surface-container-low border-b border-outline-variant">
-          <div className="col-span-4 font-label-md text-label-md text-on-surface-variant uppercase tracking-widest">Filename</div>
+          <div className="col-span-3 font-label-md text-label-md text-on-surface-variant uppercase tracking-widest">Filename</div>
           <div className="col-span-2 font-label-md text-label-md text-on-surface-variant uppercase tracking-widest">Department</div>
           <div className="col-span-1 font-label-md text-label-md text-on-surface-variant uppercase tracking-widest">Size</div>
           <div className="col-span-2 font-label-md text-label-md text-on-surface-variant uppercase tracking-widest">Sensitivity</div>
           <div className="col-span-2 font-label-md text-label-md text-on-surface-variant uppercase tracking-widest">Access</div>
-          <div className="col-span-1 text-right" />
+          <div className="col-span-2 text-right" />
         </div>
 
         {loading ? (
@@ -198,7 +198,7 @@ export default function Repository() {
                   key={a._id}
                   className={`grid grid-cols-12 gap-gutter px-md py-3 items-center group transition-colors hover:bg-surface-container ${idx % 2 ? 'bg-surface-container-low/40' : ''}`}
                 >
-                  <div className="col-span-4 flex items-center gap-3 min-w-0">
+                  <div className="col-span-3 flex items-center gap-3 min-w-0">
                     <FileTypeIcon filename={a.filename} type={a.type} />
                     <span className="font-body-md text-body-md font-semibold text-primary truncate">{a.filename}</span>
                     {a.currentVersion > 1 && (
@@ -215,7 +215,6 @@ export default function Repository() {
                   <div className="col-span-1 font-data-mono text-data-mono text-on-surface-variant">{bytes(a.size)}</div>
                   <div className="col-span-2"><SensitivityBadge level={a.sensitivity} /></div>
 
-                  {/* ACCESS STATUS BADGE */}
                   <div className="col-span-2">
                     {a.accessible ? (
                       <span className="flex items-center gap-1.5 text-on-tertiary-container font-label-md text-label-md">
@@ -232,8 +231,7 @@ export default function Repository() {
                     )}
                   </div>
 
-                  {/* ACTION BUTTONS */}
-                  <div className="col-span-1 flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="col-span-2 flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-surface-container pl-2 rounded">
                     {a.accessible && (
                       <button title="Secure View" onClick={() => openView(a._id)} className="p-2 rounded hover:bg-surface-container-high text-primary">
                         <Icon name="visibility" size={20} />
@@ -255,9 +253,8 @@ export default function Repository() {
                       </button>
                     )}
 
-                    {/* FIXED: DYNAMIC REQUEST / UPGRADE BUTTON */}
                     {showRequestBtn && (
-                      <button onClick={() => requestAccess(a)} className="border border-outline-variant px-3 py-1 rounded text-[12px] hover:bg-surface-container-high flex items-center gap-1 transition-colors text-on-surface-variant font-semibold shadow-sm ml-2">
+                      <button onClick={() => requestAccess(a)} className="border border-outline-variant px-3 py-1 rounded text-[12px] hover:bg-surface-container-high flex items-center gap-1 transition-colors text-on-surface-variant font-semibold shadow-sm ml-2 shrink-0">
                         <Icon name="key" size={14} />
                         {a.accessible ? 'Upgrade' : 'Request'}
                       </button>

@@ -73,7 +73,7 @@ export default function Shell({ children, breadcrumb }) {
   useEffect(() => {
     if (!user || !user._id) return;
 
-    const socketUrl = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+    const socketUrl = process.env.REACT_APP_API_URL || 'https://testdevserver1.wehear.in/';
     const socket = io(socketUrl, { withCredentials: true });
 
     // Join the private room for this user

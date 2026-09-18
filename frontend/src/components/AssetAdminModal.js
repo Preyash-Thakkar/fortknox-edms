@@ -90,6 +90,9 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
   const [grantTargetId, setGrantTargetId] = useState('');
   const [grantKind, setGrantKind] = useState('view');
 
+  // Custom Confirmation State
+  const [confirmRevoke, setConfirmRevoke] = useState(null);
+
   const targetCategory = categories.find((c) => c._id === targetCat);
   const allDepartments = categories.flatMap(c =>
     c.departments.map(d => ({ ...d, categoryName: c.name }))
@@ -150,14 +153,24 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
     } catch (e) { flash(e.response?.data?.error || 'Grant failed.', true); }
   };
 
-  const revokeGrant = async (targetId, targetType, kind) => {
-    if (!window.confirm(`Revoke this access? The duration will be logged.`)) return;
+  // Triggers the custom UI confirmation
+  const requestRevoke = (targetId, targetType, kind, name) => {
+    setConfirmRevoke({ targetId, targetType, kind, name });
+  };
+
+  const executeRevoke = async () => {
+    if (!confirmRevoke) return;
+    const { targetId, targetType, kind } = confirmRevoke;
     try {
       await api.post(`/assets/${asset._id}/grant`, { targetId, targetType, kind, revoke: true });
       flash('Access revoked and logged.');
       loadGrants();
       onChanged();
-    } catch (e) { flash(e.response?.data?.error || 'Revoke failed.', true); }
+    } catch (e) {
+      flash(e.response?.data?.error || 'Revoke failed.', true);
+    } finally {
+      setConfirmRevoke(null);
+    }
   };
 
   const doDelete = async () => {
@@ -175,7 +188,25 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-gutter" onClick={onClose}>
-      <div className="bg-surface-container-lowest rounded-lg border border-outline-variant shadow-sharp w-full max-w-2xl" onClick={(e) => e.stopPropagation()}>
+
+      {/* Custom Revoke Confirmation Overlay */}
+      {confirmRevoke && (
+        <div className="absolute inset-0 z-[60] bg-black/50 flex items-center justify-center rounded-lg backdrop-blur-sm" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-surface-container-lowest p-xl rounded-lg shadow-xl max-w-sm text-center border border-outline-variant">
+            <Icon name="warning" className="text-error mb-2" size={40} />
+            <h4 className="font-headline-sm text-primary mb-2">Revoke Access</h4>
+            <p className="font-body-sm text-on-surface-variant mb-6">
+              Are you sure you want to revoke <strong>{confirmRevoke.kind}</strong> access for <strong>{confirmRevoke.name}</strong>? The duration will be logged.
+            </p>
+            <div className="flex justify-center gap-4">
+              <button onClick={() => setConfirmRevoke(null)} className="px-4 py-2 rounded text-on-surface hover:bg-surface-container-high transition-colors font-bold text-sm">Cancel</button>
+              <button onClick={executeRevoke} className="px-4 py-2 rounded bg-error text-white font-bold text-sm hover:opacity-90">Revoke Access</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-surface-container-lowest rounded-lg border border-outline-variant shadow-sharp w-full max-w-2xl relative" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-lg py-3 border-b border-outline-variant">
           <h3 className="font-headline-sm text-headline-sm text-primary flex items-center gap-2 min-w-0">
             <Icon name="settings" /> <span className="truncate">Manage: {asset.filename}</span>
@@ -255,7 +286,6 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
                       }
                     </select>
                   </div>
-                  {/* FIXED: Added pr-10 to separate the text from the dropdown chevron */}
                   <select value={grantKind} onChange={(e) => setGrantKind(e.target.value)} className="px-3 pr-10 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md">
                     <option value="view">View Only</option>
                     <option value="download">Download</option>
@@ -273,26 +303,26 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
                   {grants.userView.map((u) => (
                     <div key={`uv-${u._id}`} className="flex items-center justify-between text-body-sm">
                       <span><Icon name="person" size={14} className="inline mr-1 text-on-surface-variant" /> {u.name} <span className="text-on-surface-variant">· view</span></span>
-                      <button onClick={() => revokeGrant(u._id, 'user', 'view')} className="text-error hover:underline font-label-md">Revoke & Log</button>
+                      <button onClick={() => requestRevoke(u._id, 'user', 'view', u.name)} className="text-error hover:underline font-label-md">Revoke & Log</button>
                     </div>
                   ))}
                   {grants.userDownload.map((u) => (
                     <div key={`ud-${u._id}`} className="flex items-center justify-between text-body-sm">
                       <span><Icon name="person" size={14} className="inline mr-1 text-on-surface-variant" /> {u.name} <span className="text-tertiary">· download</span></span>
-                      <button onClick={() => revokeGrant(u._id, 'user', 'download')} className="text-error hover:underline font-label-md">Revoke & Log</button>
+                      <button onClick={() => requestRevoke(u._id, 'user', 'download', u.name)} className="text-error hover:underline font-label-md">Revoke & Log</button>
                     </div>
                   ))}
 
                   {grants.deptView.map((d) => (
                     <div key={`dv-${d._id}`} className="flex items-center justify-between text-body-sm">
                       <span><Icon name="groups" size={14} className="inline mr-1 text-on-surface-variant" /> {d.name} <span className="text-on-surface-variant">· view</span></span>
-                      <button onClick={() => revokeGrant(d._id, 'department', 'view')} className="text-error hover:underline font-label-md">Revoke & Log</button>
+                      <button onClick={() => requestRevoke(d._id, 'department', 'view', d.name)} className="text-error hover:underline font-label-md">Revoke & Log</button>
                     </div>
                   ))}
                   {grants.deptDownload.map((d) => (
                     <div key={`dd-${d._id}`} className="flex items-center justify-between text-body-sm">
                       <span><Icon name="groups" size={14} className="inline mr-1 text-on-surface-variant" /> {d.name} <span className="text-tertiary">· download</span></span>
-                      <button onClick={() => revokeGrant(d._id, 'department', 'download')} className="text-error hover:underline font-label-md">Revoke & Log</button>
+                      <button onClick={() => requestRevoke(d._id, 'department', 'download', d.name)} className="text-error hover:underline font-label-md">Revoke & Log</button>
                     </div>
                   ))}
                 </div>

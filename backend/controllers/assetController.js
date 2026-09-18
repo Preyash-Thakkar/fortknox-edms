@@ -289,7 +289,6 @@ exports.deleteAsset = async (req, res) => {
 
 exports.grantAccess = async (req, res) => {
     const ip = clientIp(req);
-    // FIXED: Correctly extracting targetId and targetType sent by the frontend
     const { targetId, targetType, userId, kind, revoke } = req.body || {};
     const finalId = targetId || userId;
 
@@ -300,7 +299,6 @@ exports.grantAccess = async (req, res) => {
         let target;
         let listName;
 
-        // FIXED: Route the database search based on whether it is a User or Department
         if (targetType === 'department') {
             const Department = require('../models/Department');
             target = await Department.findById(finalId);
@@ -313,7 +311,6 @@ exports.grantAccess = async (req, res) => {
             if (!target) return res.status(404).json({ error: 'User not found.' });
         }
 
-        // Initialize array if it doesn't exist in schema yet
         if (!asset[listName]) asset[listName] = [];
         const has = userGranted(asset[listName], finalId);
 
@@ -330,7 +327,6 @@ exports.grantAccess = async (req, res) => {
         } else if (!has) {
             asset[listName].push(finalId);
 
-            // Auto-grant View access if giving Download access
             if (kind === 'download') {
                 const viewListName = targetType === 'department' ? 'deptViewGrants' : 'userViewGrants';
                 if (!asset[viewListName]) asset[viewListName] = [];
@@ -352,9 +348,13 @@ exports.grantAccess = async (req, res) => {
         await asset.save();
         await logAudit({ action: revoke ? 'GRANT_REVOKED' : 'GRANT_ADDED', userId: req.user.id, ip, details: `asset=${asset._id} target=${target.name || target.email} kind=${kind || 'view'}`, severity: 'warn' });
 
-        // Only notify Users, not Departments
-        if (!revoke && targetType !== 'department') {
-            await notify(finalId, `You were granted ${kind || 'view'} access to "${asset.filename}".`, '/');
+        // FIXED: Notify Users for both grants AND revokes
+        if (targetType !== 'department') {
+            if (revoke) {
+                await notify(finalId, `Your ${kind || 'view'} access to "${asset.filename}" has been revoked.`, '/');
+            } else {
+                await notify(finalId, `You were granted ${kind || 'view'} access to "${asset.filename}".`, '/');
+            }
         }
 
         res.json({ message: revoke ? 'Grant revoked and duration logged.' : 'Grant added with tracking.' });
