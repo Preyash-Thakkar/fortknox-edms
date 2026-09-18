@@ -5,7 +5,7 @@ const JWT_EXPIRES = process.env.JWT_EXPIRES || '8h';
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
 
 function authenticate(req, res, next) {
-    const token = req.cookies?.fk_token || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
+    const token = req.cookies?.whcr_token || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
     if (!token) return res.status(401).json({ error: 'Not authenticated.' });
     try {
         const payload = jwt.verify(token, JWT_SECRET);
@@ -26,7 +26,7 @@ function authorize(...allowed) {
 
 function setAuthCookie(res, user) {
     const token = jwt.sign({ id: user._id, role: user.role, email: user.email, name: user.name }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
-    res.cookie('fk_token', token, { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'lax', maxAge: 8 * 60 * 60 * 1000 });
+    res.cookie('whcr_token', token, { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'lax', maxAge: 8 * 60 * 60 * 1000 });
 }
 
 module.exports = { authenticate, authorize, setAuthCookie };

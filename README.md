@@ -1,4 +1,4 @@
-# Fort Knox EDMS — v2
+# WeHear Central Repository — v2
 
 Secure enterprise document/IP vault (MERN: React + Express + MongoDB).
 
@@ -33,14 +33,14 @@ Newly created users get a one-time temp password and must change it at first log
     PORT=5000
     JWT_SECRET=change_me_to_a_long_random_string
     JWT_EXPIRES=8h
-    MONGO_URI=mongodb://127.0.0.1:27017/fortknox
+    MONGO_URI=mongodb://127.0.0.1:27017/wehear_central_repository
     CLIENT_ORIGIN=http://localhost:3000     # must match the frontend origin (cookies)
     COOKIE_SECURE=false                      # set true when served over HTTPS
     # Encryption at rest (REQUIRED in production):
     FILE_ENCRYPTION_KEY=<64 hex chars>       # 32-byte AES-256 key; see "generate" below
     # Where encrypted files live. Put this OUTSIDE the app/web root in production:
-    VAULT_DIR=/var/lib/fortknox/vault        # default: backend/uploads
-    VAULT_TEMP_DIR=/var/lib/fortknox/tmp     # default: OS temp dir; plaintext only momentarily
+    VAULT_DIR=/var/lib/wehear-central-repository/vault        # default: backend/uploads
+    VAULT_TEMP_DIR=/var/lib/wehear-central-repository/tmp     # default: OS temp dir; plaintext only momentarily
     # Word preview (optional): path to LibreOffice if not on PATH
     SOFFICE_PATH=soffice
     # Optional email (in-app notifications always work; email is best-effort):

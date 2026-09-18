@@ -1,7 +1,7 @@
 {
-  "name": "fortknox-edms-backend",
+  "name": "wehear-central-repository-backend",
   "version": "2.0.0",
-  "description": "Fort Knox EDMS - secure enterprise data system backend",
+  "description": "WeHear Central Repository - secure enterprise data system backend",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

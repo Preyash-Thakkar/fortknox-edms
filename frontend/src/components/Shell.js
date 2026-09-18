@@ -110,11 +110,9 @@ export default function Shell({ children, breadcrumb }) {
         <div className="p-lg flex-1 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
 
           <div className="flex items-center gap-base mb-xl">
-            <div className="w-9 h-9 bg-white/10 rounded flex items-center justify-center text-white">
-              <Icon name="shield" fill={1} />
-            </div>
+            <img src="/logo-icon.jpeg" alt="WeHear Central Repository" className="w-9 h-9 object-contain" />
             <div>
-              <h1 className="font-headline-sm text-headline-sm font-bold text-white leading-tight">Fort Knox EDMS</h1>
+              <h1 className="font-headline-sm text-headline-sm font-bold text-white leading-tight">WeHear Central Repository</h1>
               <p className="font-label-md text-label-md text-on-primary-container uppercase tracking-wider">
                 Enterprise Security
               </p>

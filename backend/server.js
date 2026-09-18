@@ -55,7 +55,7 @@ app.use('/', require('./routes/assetRoutes'));
 app.use('/', require('./routes/requestRoutes'));
 app.use('/', require('./routes/auditRoutes'));
 
-app.get('/', (req, res) => res.json({ service: 'Fort Knox EDMS API', status: 'ok', version: 2 }));
+app.get('/', (req, res) => res.json({ service: 'WeHear Central Repository API', status: 'ok', version: 2 }));
 
 app.use((err, req, res, next) => {
   if (err) return res.status(400).json({ error: err.message || 'Request failed.' });
@@ -64,7 +64,7 @@ app.use((err, req, res, next) => {
 
 mongoose.connection.once('open', async () => {
   if (require.main === module) {
-    server.listen(PORT, () => console.log(`[API] Fort Knox EDMS v2 running on http://localhost:${PORT}`));
+    server.listen(PORT, () => console.log(`[API] WeHear Central Repository v2 running on http://localhost:${PORT}`));
   }
 });
 

@@ -59,11 +59,9 @@ export default function Login() {
     <div className="bg-pattern min-h-screen flex items-center justify-center p-gutter">
       <div className="w-full max-w-[440px] animate-fade-in">
         <div className="text-center mb-xl">
-          <div className="inline-flex items-center justify-center p-md bg-primary-container rounded-lg mb-md">
-            <Icon name="shield" className="text-white" size={32} fill={1} />
-          </div>
-          <h1 className="font-headline-md text-headline-md text-white tracking-tight">WDTS Secure Access</h1>
-          <p className="font-body-md text-body-md text-white/60 mt-1">WeHear Document Traceability System</p>
+          <img src="/logo-long.jpeg" alt="WeHear Central Repository" className="h-16 w-auto mx-auto mb-md object-contain" />
+          <h1 className="font-headline-md text-headline-md text-white tracking-tight">WeHear Central Repository</h1>
+          <p className="font-body-md text-body-md text-white/60 mt-1">Secure Enterprise Data System</p>
         </div>
 
         <div className="bg-surface rounded-lg border border-outline-variant shadow-lg overflow-hidden">

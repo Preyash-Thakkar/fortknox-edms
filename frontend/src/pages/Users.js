@@ -62,7 +62,7 @@ export default function Users() {
         <Shell breadcrumb="User Management">
             <div className="flex justify-between items-center mb-lg">
                 <div className="flex items-center gap-4">
-                    <h2 className="font-headline-md text-headline-md text-primary">WDTS Operators</h2>
+                    <h2 className="font-headline-md text-headline-md text-primary">WeHear Central Repository Operators</h2>
 
                     <div className="flex bg-surface-container-low p-1 rounded-lg border border-outline-variant">
                         <button

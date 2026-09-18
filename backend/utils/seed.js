@@ -61,7 +61,7 @@ async function seed() {
                 const page = pdf.addPage([595, 842]);
                 const font = await pdf.embedFont(StandardFonts.Helvetica);
                 page.drawText(d.filename, { x: 60, y: 760, size: 18, font });
-                page.drawText('Demo document content for Fort Knox EDMS.', { x: 60, y: 720, size: 12, font });
+                page.drawText('Demo document content for WeHear Central Repository.', { x: 60, y: 720, size: 12, font });
                 plain = Buffer.from(await pdf.save());
             } else plain = Buffer.from(`Mock content for ${d.filename}\n`);
 

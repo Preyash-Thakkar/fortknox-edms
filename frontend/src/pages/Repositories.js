@@ -44,7 +44,7 @@ export default function Repositories() {
     return (
         <Shell breadcrumb="Repository Management">
             <div className="mb-lg max-w-xl">
-                <h2 className="font-headline-md text-headline-md text-primary mb-2">WDTS Repositories</h2>
+                <h2 className="font-headline-md text-headline-md text-primary mb-2">WeHear Central Repository</h2>
                 <p className="font-body-md text-body-md text-on-surface-variant mb-6">
                     Create new strict 1-to-1 repository mappings. Creating a repository automatically provisions its corresponding access department.
                 </p>

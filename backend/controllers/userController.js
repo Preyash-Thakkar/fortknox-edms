@@ -64,7 +64,7 @@ exports.createUser = async (req, res) => {
         });
 
         await logAudit({ action: 'USER_CREATED', userId: req.user.id, ip, details: `created=${user.email} role=${role} dept=${department}`, severity: 'warn' });
-        await sendEmail(normalizedEmail, 'Your Fort Knox EDMS account', `An account was created for you.\nEmail: ${normalizedEmail}\nPassword: ${finalPassword}\nDepartment: ${department}\nYou will be asked to change it on first login.`);
+        await sendEmail(normalizedEmail, 'Your WeHear Central Repository account', `An account was created for you.\nEmail: ${normalizedEmail}\nPassword: ${finalPassword}\nDepartment: ${department}\nYou will be asked to change it on first login.`);
 
         res.status(201).json({ message: 'User created.', user: { id: user._id, name: user.name, email: user.email, role: user.role, department: user.department, title: user.title, active: user.active } });
     } catch (err) {
@@ -113,7 +113,7 @@ exports.resetPassword = async (req, res) => {
         user.mustChangePassword = true;
         await user.save();
         await logAudit({ action: 'USER_PASSWORD_RESET', userId: req.user.id, ip, details: `target=${user.email}`, severity: 'warn' });
-        await sendEmail(user.email, 'Your Fort Knox EDMS password was reset', `A new temporary password was set: ${tempPassword}\nYou will be asked to change it on next login.`);
+        await sendEmail(user.email, 'Your WeHear Central Repository password was reset', `A new temporary password was set: ${tempPassword}\nYou will be asked to change it on next login.`);
         res.json({ message: 'Password reset.', tempPassword, user: { id: user._id, email: user.email } });
     } catch (err) { console.error('[USER_RESET]', err.message); res.status(500).json({ error: 'Could not reset password.' }); }
 };

@@ -1,5 +1,5 @@
 /**
- * Fort Knox EDMS — automated test suite.
+ * WeHear Central Repository — automated test suite.
  *
  * These are REAL integration tests: they boot the Express app against an
  * in-memory MongoDB (mongodb-memory-server), exercise the HTTP API end to end,
@@ -44,7 +44,7 @@ afterAll(async () => {
 // Helper: login and capture the auth cookie.
 async function login(email, password) {
   const res = await request(app).post('/auth/login').send({ email, password });
-  const cookie = res.headers['set-cookie']?.find((c) => c.startsWith('fk_token='));
+  const cookie = res.headers['set-cookie']?.find((c) => c.startsWith('whcr_token='));
   return { res, cookie };
 }
 const auth = (req, cookie) => req.set('Cookie', cookie);

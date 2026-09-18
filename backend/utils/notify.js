@@ -6,7 +6,7 @@ async function notify(userId, text, link = '') {
     try {
         await Notification.create({ user: userId, text, link });
         const u = await User.findById(userId).select('email').lean();
-        if (u?.email) await sendEmail(u.email, 'Fort Knox EDMS notification', text);
+        if (u?.email) await sendEmail(u.email, 'WeHear Central Repository notification', text);
     } catch (err) { console.error('[NOTIFY]', err.message); }
 }
 
