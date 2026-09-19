@@ -5,7 +5,6 @@ import RoleGuard from './RoleGuard';
 
 const SENS = ['Public', 'Internal', 'Confidential', 'Strictly Confidential'];
 
-// New Component: Document Control Workflow
 const WorkflowControls = ({ asset, currentUser, onStatusChange }) => {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState('');
@@ -14,10 +13,9 @@ const WorkflowControls = ({ asset, currentUser, onStatusChange }) => {
     setLoading(true);
     setMsg('');
     try {
-      // Note: Ensure your backend PATCH /assets/:id endpoint accepts 'controlStatus'
       await api.patch(`/assets/${asset._id}`, { controlStatus: newStatus });
       setMsg(`Asset successfully moved to ${newStatus}`);
-      if (onStatusChange) onStatusChange(); // Refresh the data globally
+      if (onStatusChange) onStatusChange();
     } catch (error) {
       alert(error.response?.data?.error || 'Failed to update status');
     } finally {
@@ -37,7 +35,6 @@ const WorkflowControls = ({ asset, currentUser, onStatusChange }) => {
 
         {msg && <div className="text-primary font-body-sm mb-4">{msg}</div>}
 
-        {/* ROLE GUARD: Only Admins and Management can see these buttons */}
         <RoleGuard user={currentUser} allowedRoles={['Management']}>
           <div className="flex gap-2">
             {(asset.controlStatus === 'Draft' || !asset.controlStatus) && (
@@ -69,23 +66,19 @@ const WorkflowControls = ({ asset, currentUser, onStatusChange }) => {
   );
 };
 
-// CRITICAL: Ensure you pass `currentUser` into this modal from the parent Repository page
 export default function AssetAdminModal({ asset, categories, currentUser, onClose, onChanged }) {
   const [tab, setTab] = useState('edit');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
-  // edit state
   const [filename, setFilename] = useState(asset.filename);
   const [keywords, setKeywords] = useState(asset.keywords || '');
   const [sensitivity, setSensitivity] = useState(asset.sensitivity);
 
-  // move/copy state
   const [targetCat, setTargetCat] = useState('');
   const [targetDept, setTargetDept] = useState('');
   const [mode, setMode] = useState('move');
 
-  // grants state
   const [users, setUsers] = useState([]);
   const [grants, setGrants] = useState({
     userView: [], userDownload: [],
@@ -97,8 +90,10 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
   const [grantTargetId, setGrantTargetId] = useState('');
   const [grantKind, setGrantKind] = useState('view');
 
-  const targetCategory = categories.find((c) => c._id === targetCat);
+  // Custom Confirmation State
+  const [confirmRevoke, setConfirmRevoke] = useState(null);
 
+  const targetCategory = categories.find((c) => c._id === targetCat);
   const allDepartments = categories.flatMap(c =>
     c.departments.map(d => ({ ...d, categoryName: c.name }))
   );
@@ -110,8 +105,8 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
         api.get('/users')
       ]);
       setGrants({
-        userView: g.data.userView || [],
-        userDownload: g.data.userDownload || [],
+        userView: g.data.viewGrants || g.data.userView || [],
+        userDownload: g.data.downloadGrants || g.data.userDownload || [],
         deptView: g.data.deptView || [],
         deptDownload: g.data.deptDownload || [],
         accessLogs: g.data.accessLogs || []
@@ -158,14 +153,24 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
     } catch (e) { flash(e.response?.data?.error || 'Grant failed.', true); }
   };
 
-  const revokeGrant = async (targetId, targetType, kind) => {
-    if (!window.confirm(`Revoke this access? The duration will be logged.`)) return;
+  // Triggers the custom UI confirmation
+  const requestRevoke = (targetId, targetType, kind, name) => {
+    setConfirmRevoke({ targetId, targetType, kind, name });
+  };
+
+  const executeRevoke = async () => {
+    if (!confirmRevoke) return;
+    const { targetId, targetType, kind } = confirmRevoke;
     try {
       await api.post(`/assets/${asset._id}/grant`, { targetId, targetType, kind, revoke: true });
       flash('Access revoked and logged.');
       loadGrants();
       onChanged();
-    } catch (e) { flash(e.response?.data?.error || 'Revoke failed.', true); }
+    } catch (e) {
+      flash(e.response?.data?.error || 'Revoke failed.', true);
+    } finally {
+      setConfirmRevoke(null);
+    }
   };
 
   const doDelete = async () => {
@@ -183,7 +188,25 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-gutter" onClick={onClose}>
-      <div className="bg-surface-container-lowest rounded-lg border border-outline-variant shadow-sharp w-full max-w-2xl" onClick={(e) => e.stopPropagation()}>
+
+      {/* Custom Revoke Confirmation Overlay */}
+      {confirmRevoke && (
+        <div className="absolute inset-0 z-[60] bg-black/50 flex items-center justify-center rounded-lg backdrop-blur-sm" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-surface-container-lowest p-xl rounded-lg shadow-xl max-w-sm text-center border border-outline-variant">
+            <Icon name="warning" className="text-error mb-2" size={40} />
+            <h4 className="font-headline-sm text-primary mb-2">Revoke Access</h4>
+            <p className="font-body-sm text-on-surface-variant mb-6">
+              Are you sure you want to revoke <strong>{confirmRevoke.kind}</strong> access for <strong>{confirmRevoke.name}</strong>? The duration will be logged.
+            </p>
+            <div className="flex justify-center gap-4">
+              <button onClick={() => setConfirmRevoke(null)} className="px-4 py-2 rounded text-on-surface hover:bg-surface-container-high transition-colors font-bold text-sm">Cancel</button>
+              <button onClick={executeRevoke} className="px-4 py-2 rounded bg-error text-white font-bold text-sm hover:opacity-90">Revoke Access</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-surface-container-lowest rounded-lg border border-outline-variant shadow-sharp w-full max-w-2xl relative" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-lg py-3 border-b border-outline-variant">
           <h3 className="font-headline-sm text-headline-sm text-primary flex items-center gap-2 min-w-0">
             <Icon name="settings" /> <span className="truncate">Manage: {asset.filename}</span>
@@ -203,7 +226,6 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
           {msg && <div className="text-on-tertiary-container font-body-sm text-body-sm bg-secondary-container/40 px-3 py-2 rounded">{msg}</div>}
           {err && <div className="text-error font-body-sm text-body-sm bg-error-container px-3 py-2 rounded">{err}</div>}
 
-          {/* EDIT TAB */}
           {tab === 'edit' && (
             <>
               <div><label className="font-label-lg text-label-lg text-on-surface-variant block mb-1">DISPLAY NAME</label>
@@ -218,12 +240,10 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
             </>
           )}
 
-          {/* WORKFLOW STATUS TAB */}
           {tab === 'status' && (
             <WorkflowControls asset={asset} currentUser={currentUser} onStatusChange={onChanged} />
           )}
 
-          {/* MOVE/COPY TAB */}
           {tab === 'move' && (
             <>
               <div className="flex gap-2">
@@ -244,7 +264,6 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
             </>
           )}
 
-          {/* GRANTS & LOGS TAB */}
           {tab === 'grants' && (
             <div className="space-y-lg">
               <div className="bg-surface-container-low p-md rounded border border-outline-variant">
@@ -259,7 +278,7 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
                 </div>
                 <div className="flex gap-2 items-end">
                   <div className="flex-1">
-                    <select value={grantTargetId} onChange={(e) => setGrantTargetId(e.target.value)} className="w-full px-3 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md">
+                    <select value={grantTargetId} onChange={(e) => setGrantTargetId(e.target.value)} className="w-full px-3 pr-10 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md">
                       <option value="">— Select {grantTargetType} —</option>
                       {grantTargetType === 'user'
                         ? users.map((u) => <option key={u._id} value={u._id}>{u.name} ({u.role})</option>)
@@ -267,7 +286,7 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
                       }
                     </select>
                   </div>
-                  <select value={grantKind} onChange={(e) => setGrantKind(e.target.value)} className="px-3 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md">
+                  <select value={grantKind} onChange={(e) => setGrantKind(e.target.value)} className="px-3 pr-10 py-2 bg-white border border-outline-variant rounded focus:border-primary outline-none font-body-md">
                     <option value="view">View Only</option>
                     <option value="download">Download</option>
                   </select>
@@ -284,26 +303,26 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
                   {grants.userView.map((u) => (
                     <div key={`uv-${u._id}`} className="flex items-center justify-between text-body-sm">
                       <span><Icon name="person" size={14} className="inline mr-1 text-on-surface-variant" /> {u.name} <span className="text-on-surface-variant">· view</span></span>
-                      <button onClick={() => revokeGrant(u._id, 'user', 'view')} className="text-error hover:underline font-label-md">Revoke & Log</button>
+                      <button onClick={() => requestRevoke(u._id, 'user', 'view', u.name)} className="text-error hover:underline font-label-md">Revoke & Log</button>
                     </div>
                   ))}
                   {grants.userDownload.map((u) => (
                     <div key={`ud-${u._id}`} className="flex items-center justify-between text-body-sm">
                       <span><Icon name="person" size={14} className="inline mr-1 text-on-surface-variant" /> {u.name} <span className="text-tertiary">· download</span></span>
-                      <button onClick={() => revokeGrant(u._id, 'user', 'download')} className="text-error hover:underline font-label-md">Revoke & Log</button>
+                      <button onClick={() => requestRevoke(u._id, 'user', 'download', u.name)} className="text-error hover:underline font-label-md">Revoke & Log</button>
                     </div>
                   ))}
 
                   {grants.deptView.map((d) => (
                     <div key={`dv-${d._id}`} className="flex items-center justify-between text-body-sm">
                       <span><Icon name="groups" size={14} className="inline mr-1 text-on-surface-variant" /> {d.name} <span className="text-on-surface-variant">· view</span></span>
-                      <button onClick={() => revokeGrant(d._id, 'department', 'view')} className="text-error hover:underline font-label-md">Revoke & Log</button>
+                      <button onClick={() => requestRevoke(d._id, 'department', 'view', d.name)} className="text-error hover:underline font-label-md">Revoke & Log</button>
                     </div>
                   ))}
                   {grants.deptDownload.map((d) => (
                     <div key={`dd-${d._id}`} className="flex items-center justify-between text-body-sm">
                       <span><Icon name="groups" size={14} className="inline mr-1 text-on-surface-variant" /> {d.name} <span className="text-tertiary">· download</span></span>
-                      <button onClick={() => revokeGrant(d._id, 'department', 'download')} className="text-error hover:underline font-label-md">Revoke & Log</button>
+                      <button onClick={() => requestRevoke(d._id, 'department', 'download', d.name)} className="text-error hover:underline font-label-md">Revoke & Log</button>
                     </div>
                   ))}
                 </div>
@@ -340,11 +359,9 @@ export default function AssetAdminModal({ asset, categories, currentUser, onClos
                   )}
                 </div>
               </div>
-
             </div>
           )}
 
-          {/* DELETE TAB */}
           {tab === 'delete' && (
             <div className="text-center py-md">
               <Icon name="warning" size={36} className="text-error" />

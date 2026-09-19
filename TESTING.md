@@ -1,4 +1,4 @@
-# Fort Knox EDMS — Testing & Scalability Assessment
+# WeHear Central Repository — Testing & Scalability Assessment
 
 This is an honest engineering assessment of (1) how the code has and hasn't been
 tested, (2) whether it is ready for a large-scale organization, and (3) whether

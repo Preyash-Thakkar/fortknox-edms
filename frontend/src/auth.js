@@ -1,7 +1,7 @@
 import axios from 'axios';
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 
-// const API = 'https://lmsdevelopment.wehear.in'
+// const API = 'https://testdevserver1.wehear.in/'
 const API = '  http://localhost:5000';
 
 // Shared axios instance. credentials:true sends the httpOnly auth cookie.

@@ -14,7 +14,7 @@ const FILE_ENC_KEY = (() => {
         console.error('[SECURITY] FILE_ENCRYPTION_KEY is missing or invalid.');
         process.exit(1);
     }
-    return crypto.createHash('sha256').update('fortknox-dev-file-key').digest();
+    return crypto.createHash('sha256').update('wehear-central-repository-dev-file-key').digest();
 })();
 
 const FILE_TYPES = {
@@ -30,7 +30,7 @@ const UPLOAD_DIR = process.env.VAULT_DIR || path.join(__dirname, '../uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true, mode: 0o700 });
 try { fs.chmodSync(UPLOAD_DIR, 0o700); } catch { /* ignore */ }
 
-const TEMP_DIR = process.env.VAULT_TEMP_DIR || path.join(os.tmpdir(), 'fk-uploads');
+const TEMP_DIR = process.env.VAULT_TEMP_DIR || path.join(os.tmpdir(), 'whcr-uploads');
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true, mode: 0o700 });
 try { fs.chmodSync(TEMP_DIR, 0o700); } catch { /* ignore */ }
 
@@ -125,7 +125,7 @@ async function watermarkImageBuffer(srcBuf, text) {
 
 function convertToPdf(inputBuf, ext) {
     return new Promise((resolve, reject) => {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fk-conv-'));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'whcr-conv-'));
         const inPath = path.join(dir, `src.${ext}`);
         fs.writeFileSync(inPath, inputBuf);
         const soffice = process.env.SOFFICE_PATH || 'soffice';

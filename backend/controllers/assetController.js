@@ -15,37 +15,37 @@ const { SENSITIVITY, DEPARTMENTS } = require('../constants');
 
 exports.getStats = async (req, res) => {
     try {
-        const isAdmin = req.user.role === 'Admin';
-        const [totalAssets, pendingReqs, criticalEvents] = await Promise.all([
-            Asset.countDocuments({ deletedAt: null }),
-            AccessRequest.countDocuments({ status: 'Pending' }),
-            AuditLog.countDocuments({ severity: 'critical' }),
-        ]);
+        // 1. Get raw counts
+        const totalAssets = await Asset.countDocuments();
 
-        let accessible = totalAssets;
-        if (!isAdmin) {
-            const role = req.user.role;
-            const uid = new mongoose.Types.ObjectId(req.user.id);
-            const result = await Asset.aggregate([
-                { $match: { deletedAt: null } },
-                { $lookup: { from: 'departments', localField: 'department', foreignField: '_id', as: '_dept' } },
-                { $addFields: { _deptAllowed: { $ifNull: [{ $arrayElemAt: ['$_dept.allowedRoles', 0] }, []] } } },
-                {
-                    $match: {
-                        $or: [
-                            { allowedRoles: role, $or: [{ _deptAllowed: { $size: 0 } }, { _deptAllowed: role }] },
-                            { userViewGrants: uid },
-                        ],
-                    },
-                },
-                { $count: 'n' },
-            ]);
-            accessible = result[0]?.n || 0;
+        // 2. Fetch all assets to evaluate true cryptographic access
+        const allAssets = await Asset.find().populate('department');
+
+        // 3. Filter using our strict Zero-Trust logic
+        const accessibleAssets = allAssets.filter(asset => canView(req.user, asset)).length;
+
+        // 4. Scoped Pending Requests (Heads see their dept requests, Admins see all)
+        let pendingQuery = { status: 'Pending' };
+        if (req.user.role === 'Management' && req.user.headOfDepartments?.length > 0) {
+            // Find assets belonging to their departments
+            const deptAssets = await Asset.find({ departmentName: { $in: req.user.headOfDepartments } }).select('_id');
+            pendingQuery.asset = { $in: deptAssets.map(a => a._id) };
         }
-        res.json({ totalAssets, accessibleAssets: accessible, pendingRequests: pendingReqs, criticalEvents });
-    } catch (err) { console.error('[STATS]', err.message); res.status(500).json({ error: 'Could not load stats.' }); }
-};
+        const pendingRequests = await AccessRequest.countDocuments(pendingQuery);
 
+        // 5. Critical Events (Fallback to 0 if AuditLog isn't wired yet)
+        const criticalEvents = await AuditLog.countDocuments({ severity: 'CRITICAL' }) || 0;
+
+        res.json({
+            totalAssets,
+            accessibleAssets,
+            pendingRequests,
+            criticalEvents
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch dashboard stats.' });
+    }
+};
 exports.getAssets = async (req, res) => {
     try {
         const { category, department, q, trashed } = req.query;
@@ -122,7 +122,7 @@ exports.uploadAsset = async (req, res) => {
         const enc = ingestUpload(req.file.path);
         const fType = fileTypeLabel(req.file.originalname);
 
-        // Smart Versioning: If assetId is provided, upload as a new version
+        // Smart Versioning
         if (assetId) {
             const asset = await Asset.findById(assetId);
             if (!asset) { fs.unlink(enc.path, () => { }); return res.status(404).json({ error: 'Asset not found.' }); }
@@ -160,13 +160,16 @@ exports.uploadAsset = async (req, res) => {
             fileType: fType || '',
             category: category._id,
             department: departmentRef,
-            departmentName: DEPARTMENTS.includes(deptName) ? deptName : 'Electronics',
+            departmentName: deptName, // Fixed static bypass
             sensitivity: SENSITIVITY.includes(sensitivity) ? sensitivity : 'Internal',
             allowedRoles: category.allowedRoles,
             downloadRoles: category.downloadRoles || [],
             currentVersion: 1,
             versions: [{ version: 1, path: enc.path, size: enc.size, hash: enc.hash, uploadedBy: req.user.id, note: note || 'Initial version' }],
             uploadedBy: req.user.id,
+            userViewGrants: [req.user.id],     // Explicit access grant
+            userDownloadGrants: [req.user.id], // Explicit access grant
+            userEditGrants: [req.user.id]      // Explicit access grant
         });
 
         await logAudit({ action: 'UPLOAD', userId: req.user.id, ip, details: `asset=${asset._id} file=${asset.filename} dept=${deptName}` });
@@ -204,6 +207,9 @@ exports.bulkUpload = async (req, res) => {
                 allowedRoles: category.allowedRoles, downloadRoles: category.downloadRoles || [],
                 currentVersion: 1, versions: [{ version: 1, path: enc.path, size: enc.size, hash: enc.hash, uploadedBy: req.user.id, note: 'Initial version' }],
                 uploadedBy: req.user.id,
+                userViewGrants: [req.user.id],     // Explicit access grant
+                userDownloadGrants: [req.user.id], // Explicit access grant
+                userEditGrants: [req.user.id]      // Explicit access grant
             });
             created.push(asset._id);
         }
@@ -283,21 +289,35 @@ exports.deleteAsset = async (req, res) => {
 
 exports.grantAccess = async (req, res) => {
     const ip = clientIp(req);
-    const { targetId, userId, kind, revoke } = req.body || {};
-    const finalUserId = targetId || userId;
+    const { targetId, targetType, userId, kind, revoke } = req.body || {};
+    const finalId = targetId || userId;
+
     try {
         const asset = await Asset.findById(req.params.id);
         if (!asset) return res.status(404).json({ error: 'Asset not found.' });
-        const target = await User.findById(userId);
-        if (!target) return res.status(404).json({ error: 'User not found.' });
 
-        const listName = kind === 'download' ? 'userDownloadGrants' : 'userViewGrants';
-        const has = userGranted(asset[listName], userId);
+        let target;
+        let listName;
+
+        if (targetType === 'department') {
+            const Department = require('../models/Department');
+            target = await Department.findById(finalId);
+            listName = kind === 'download' ? 'deptDownloadGrants' : 'deptViewGrants';
+            if (!target) return res.status(404).json({ error: 'Department not found.' });
+        } else {
+            const User = require('../models/User');
+            target = await User.findById(finalId);
+            listName = kind === 'download' ? 'userDownloadGrants' : 'userViewGrants';
+            if (!target) return res.status(404).json({ error: 'User not found.' });
+        }
+
+        if (!asset[listName]) asset[listName] = [];
+        const has = userGranted(asset[listName], finalId);
 
         if (revoke) {
-            asset[listName] = asset[listName].filter((id) => String(id) !== String(userId));
-            // Update access logs history entry with duration and revocation timestamp
-            const logEntry = asset.accessLogs.find(l => String(l.user) === String(userId) && l.kind === kind && !l.revokedAt);
+            asset[listName] = asset[listName].filter((id) => String(id) !== String(finalId));
+
+            const logEntry = asset.accessLogs?.find(l => String(l.user) === String(finalId) && l.kind === kind && !l.revokedAt);
             if (logEntry) {
                 logEntry.revokedAt = new Date();
                 const diffMs = logEntry.revokedAt - new Date(logEntry.grantedAt);
@@ -305,12 +325,19 @@ exports.grantAccess = async (req, res) => {
                 logEntry.durationString = `${diffHrs} hours`;
             }
         } else if (!has) {
-            asset[listName].push(userId);
-            if (kind === 'download' && !userGranted(asset.userViewGrants, userId)) asset.userViewGrants.push(userId);
+            asset[listName].push(finalId);
 
-            // Push new tracked grant window into accessLogs
+            if (kind === 'download') {
+                const viewListName = targetType === 'department' ? 'deptViewGrants' : 'userViewGrants';
+                if (!asset[viewListName]) asset[viewListName] = [];
+                if (!userGranted(asset[viewListName], finalId)) {
+                    asset[viewListName].push(finalId);
+                }
+            }
+
+            if (!asset.accessLogs) asset.accessLogs = [];
             asset.accessLogs.push({
-                user: userId,
+                user: finalId,
                 kind: kind || 'view',
                 grantedBy: req.user.id,
                 grantedAt: new Date(),
@@ -319,10 +346,22 @@ exports.grantAccess = async (req, res) => {
         }
 
         await asset.save();
-        await logAudit({ action: revoke ? 'GRANT_REVOKED' : 'GRANT_ADDED', userId: req.user.id, ip, details: `asset=${asset._id} user=${target.email} kind=${kind || 'view'}`, severity: 'warn' });
-        if (!revoke) await notify(userId, `You were granted ${kind || 'view'} access to "${asset.filename}".`, '/');
+        await logAudit({ action: revoke ? 'GRANT_REVOKED' : 'GRANT_ADDED', userId: req.user.id, ip, details: `asset=${asset._id} target=${target.name || target.email} kind=${kind || 'view'}`, severity: 'warn' });
+
+        // FIXED: Notify Users for both grants AND revokes
+        if (targetType !== 'department') {
+            if (revoke) {
+                await notify(finalId, `Your ${kind || 'view'} access to "${asset.filename}" has been revoked.`, '/');
+            } else {
+                await notify(finalId, `You were granted ${kind || 'view'} access to "${asset.filename}".`, '/');
+            }
+        }
+
         res.json({ message: revoke ? 'Grant revoked and duration logged.' : 'Grant added with tracking.' });
-    } catch (err) { console.error('[GRANT]', err.message); res.status(500).json({ error: 'Could not update grant.' }); }
+    } catch (err) {
+        console.error('[GRANT]', err.message);
+        res.status(500).json({ error: 'Could not update grant.' });
+    }
 };
 
 exports.getGrants = async (req, res) => {
@@ -380,30 +419,54 @@ exports.viewAsset = async (req, res) => {
             return res.status(403).json({ error: 'Forbidden: not authorized to view this asset.' });
         }
 
-        // Track view metrics in active grant log
-        const activeLog = asset.accessLogs.find(l => String(l.user) === String(req.user.id) && !l.revokedAt);
+        const activeLog = asset.accessLogs?.find(l => String(l.user) === String(req.user.id) && !l.revokedAt);
         if (activeLog) {
             activeLog.viewsCount += 1;
             await asset.save();
         }
 
-        const latest = asset.versions[asset.versions.length - 1];
+        const reqVersion = parseInt(req.query.v, 10);
+        let targetVersionData;
+
+        if (reqVersion && !isNaN(reqVersion)) {
+            targetVersionData = asset.versions.find(v => v.version === reqVersion);
+        }
+        if (!targetVersionData) {
+            targetVersionData = asset.versions[asset.versions.length - 1];
+        }
+
+        // Determine preview kind for the frontend iframe/img tag
         const ext = extOf(asset.filename);
         const isPdf = ext === 'pdf';
         const isImage = ['jpg', 'jpeg', 'png'].includes(ext);
         const isConvertible = ['doc', 'docx'].includes(ext);
-        const previewable = isPdf || isImage || isConvertible;
-        const previewKind = isPdf ? 'pdf' : isImage ? 'image' : isConvertible ? 'pdf' : 'none';
 
-        await logAudit({ action: 'VIEW', userId: req.user.id, ip, details: `asset=${asset._id}` });
+        // Default to PDF if we aren't sure, so the frontend attempts an iframe render which is most flexible
+        const previewable = isPdf || isImage || isConvertible || true;
+        const previewKind = isImage ? 'image' : 'pdf';
+
+        await logAudit({ action: 'VIEW', userId: req.user.id, ip, details: `asset=${asset._id} version=${targetVersionData.version}` });
+
         res.json({
             message: 'Secure view session opened.',
             watermark: `CONFIDENTIAL • ${req.user.email} • ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
-            previewable, previewKind,
+            previewable,
+            previewKind,
             canDownload: canDownload(req.user, assetObj),
-            asset: { id: asset._id, filename: asset.filename, type: asset.type, fileType: asset.fileType, sensitivity: asset.sensitivity, version: asset.currentVersion, hash: latest?.hash || '' },
+            asset: {
+                id: asset._id,
+                filename: asset.filename,
+                type: asset.type,
+                fileType: asset.fileType,
+                sensitivity: asset.sensitivity,
+                version: targetVersionData.version,
+                hash: targetVersionData.hash || ''
+            },
         });
-    } catch (err) { console.error('[VIEW]', err.message); res.status(500).json({ error: 'Could not open secure view.' }); }
+    } catch (err) {
+        console.error('[VIEW]', err.message);
+        res.status(500).json({ error: 'Could not open secure view.' });
+    }
 };
 
 exports.rawAsset = async (req, res) => {
@@ -421,16 +484,36 @@ exports.rawAsset = async (req, res) => {
             return res.status(403).json({ error: 'Forbidden.' });
         }
 
-        const latest = asset.versions[asset.versions.length - 1];
-        if (!latest || !fs.existsSync(latest.path)) return res.status(404).json({ error: 'File data not found.' });
+        // 1. Target the exact version requested by the Traceability UI
+        const reqVersion = parseInt(req.query.v, 10);
+        let targetVersionData;
+
+        if (reqVersion && !isNaN(reqVersion)) {
+            targetVersionData = asset.versions.find(v => v.version === reqVersion);
+        }
+        if (!targetVersionData) {
+            targetVersionData = asset.versions[asset.versions.length - 1];
+        }
+
+        if (!targetVersionData || !fs.existsSync(targetVersionData.path)) {
+            return res.status(404).json({ error: 'File data not found on server.' });
+        }
 
         const wantsDownload = req.query.download === '1' || req.query.download === 'true';
-        const ext = extOf(asset.filename);
         const wmText = `${req.user.email}  ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`;
 
+        // 2. Safely decrypt and validate the buffer
         let plain;
-        try { plain = readEncrypted(latest.path); }
-        catch { await logAudit({ action: 'DECRYPT_FAILED', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'critical' }); return res.status(500).json({ error: 'File could not be decrypted.' }); }
+        try {
+            plain = readEncrypted(targetVersionData.path);
+        } catch {
+            await logAudit({ action: 'DECRYPT_FAILED', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'critical' });
+            return res.status(500).json({ error: 'File could not be decrypted.' });
+        }
+
+        if (!plain || plain.length === 0) {
+            return res.status(500).json({ error: 'The file buffer is empty. The historical upload may have been corrupted.' });
+        }
 
         if (wantsDownload) {
             if (!canDownload(req.user, assetObj)) {
@@ -438,43 +521,153 @@ exports.rawAsset = async (req, res) => {
                 return res.status(403).json({ error: 'Your role is not permitted to download this file.' });
             }
 
-            // Track download metrics
-            const activeLog = asset.accessLogs.find(l => String(l.user) === String(req.user.id) && !l.revokedAt);
+            const activeLog = asset.accessLogs?.find(l => String(l.user) === String(req.user.id) && !l.revokedAt);
             if (activeLog) {
                 activeLog.downloadsCount += 1;
                 await asset.save();
             }
 
-            await logAudit({ action: 'DOWNLOAD', userId: req.user.id, ip, details: `asset=${asset._id}`, severity: 'warn' });
+            await logAudit({ action: 'DOWNLOAD', userId: req.user.id, ip, details: `asset=${asset._id} v=${targetVersionData.version}`, severity: 'warn' });
             res.setHeader('Content-Type', asset.type || 'application/octet-stream');
             res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(asset.filename)}"`);
             return res.end(plain);
         }
 
-        await logAudit({ action: 'VIEW_STREAM', userId: req.user.id, ip, details: `asset=${asset._id}` });
+        await logAudit({ action: 'VIEW_STREAM', userId: req.user.id, ip, details: `asset=${asset._id} v=${targetVersionData.version}` });
         res.setHeader('Cache-Control', 'private, no-store');
 
-        if (ext === 'pdf') {
-            const bytes = await watermarkPdfBuffer(plain, wmText);
-            res.setHeader('Content-Type', 'application/pdf'); res.setHeader('Content-Disposition', 'inline');
-            return res.end(Buffer.from(bytes));
+        // 3. MAGIC BYTES DETECTION (Ignores the filename extension entirely to prevent crashes)
+        const isPdf = plain.length > 4 && plain[0] === 0x25 && plain[1] === 0x50 && plain[2] === 0x44 && plain[3] === 0x46; // Matches %PDF
+        const isImage = (plain.length > 2 && plain[0] === 0xFF && plain[1] === 0xD8) || // Matches JPEG
+            (plain.length > 8 && plain[0] === 0x89 && plain[1] === 0x50 && plain[2] === 0x4E && plain[3] === 0x47); // Matches PNG
+
+        if (isPdf) {
+            try {
+                const bytes = await watermarkPdfBuffer(plain, wmText);
+                res.setHeader('Content-Type', 'application/pdf');
+                res.setHeader('Content-Disposition', 'inline');
+                return res.end(Buffer.from(bytes));
+            } catch (e) {
+                return res.status(500).json({ error: 'Failed to watermark PDF data.' });
+            }
         }
-        if (['jpg', 'jpeg', 'png'].includes(ext)) {
-            const buf = await watermarkImageBuffer(plain, wmText);
-            res.setHeader('Content-Type', 'image/png'); res.setHeader('Content-Disposition', 'inline');
-            return res.end(buf);
+
+        if (isImage) {
+            try {
+                const buf = await watermarkImageBuffer(plain, wmText);
+                res.setHeader('Content-Type', 'image/png');
+                res.setHeader('Content-Disposition', 'inline');
+                return res.end(buf);
+            } catch (e) {
+                return res.status(500).json({ error: 'Failed to watermark Image data.' });
+            }
         }
+
+        // Fallback for doc/docx routing
+        const ext = extOf(asset.filename);
         if (['doc', 'docx'].includes(ext)) {
             try {
                 const pdfBuf = await convertToPdf(plain, ext);
                 const bytes = await watermarkPdfBuffer(pdfBuf, wmText);
-                res.setHeader('Content-Type', 'application/pdf'); res.setHeader('Content-Disposition', 'inline');
+                res.setHeader('Content-Type', 'application/pdf');
+                res.setHeader('Content-Disposition', 'inline');
                 return res.end(Buffer.from(bytes));
             } catch (e) {
                 console.error('[CONVERT]', e.message);
                 return res.status(422).json({ error: 'Document conversion failed.' });
             }
         }
-        return res.status(415).json({ error: 'Unsupported preview type.' });
-    } catch (err) { console.error('[RAW]', err.message); if (!res.headersSent) res.status(500).json({ error: 'Could not stream file.' }); }
+
+        return res.status(415).json({ error: 'Unsupported preview type or missing file header.' });
+    } catch (err) {
+        console.error('[RAW]', err.message);
+        if (!res.headersSent) res.status(500).json({ error: 'Could not stream file.' });
+    }
+};
+
+exports.uploadNewVersion = async (req, res) => {
+    const ip = clientIp(req);
+    try {
+        const asset = await Asset.findById(req.params.id);
+        if (!asset) return res.status(404).json({ error: 'Asset not found.' });
+
+        if (!req.file) return res.status(400).json({ error: 'No new file provided.' });
+
+        // Run the exact same security and encryption ingest used in your initial upload
+        const scan = scanFile(req.file.path, req.file.originalname);
+        if (!scan.ok) {
+            const fs = require('fs');
+            fs.unlink(req.file.path, () => { });
+            return res.status(400).json({ error: `Upload rejected: ${scan.reason}` });
+        }
+        const enc = ingestUpload(req.file.path);
+
+        const nextV = (asset.currentVersion || 1) + 1;
+        const versionNote = req.body.versionNote || 'Updated version';
+
+        // Push directly to the correct 'versions' array
+        asset.versions.push({
+            version: nextV,
+            path: enc.path,
+            size: enc.size,
+            hash: enc.hash,
+            uploadedBy: req.user.id,
+            note: versionNote,
+            createdAt: new Date() // Explicit timestamp to prevent Invalid Date moving forward
+        });
+
+        asset.currentVersion = nextV;
+        asset.filename = req.body.filename || req.file.originalname;
+
+        await asset.save();
+
+        await logAudit({ action: 'VERSION_UPDATED', userId: req.user.id, ip, details: `asset=${asset._id} v=${nextV} note="${versionNote}"`, severity: 'info' });
+
+        res.json({ message: 'New version securely checked in.', asset });
+    } catch (err) {
+        console.error('[UPLOAD_VERSION]', err.message);
+        res.status(500).json({ error: 'Could not upload new version.' });
+    }
+};
+
+exports.getAssetTraceability = async (req, res) => {
+    try {
+        const Asset = require('../models/Asset');
+        const AuditLog = require('../models/AuditLog');
+
+        const asset = await Asset.findById(req.params.id)
+            .populate('uploadedBy', 'name email role')
+            .populate('versions.uploadedBy', 'name email role');
+
+        if (!asset) return res.status(404).json({ error: 'Asset not found.' });
+
+        if (req.user.role !== 'Admin' && req.user.role !== 'Management' && String(asset.uploadedBy?._id || asset.uploadedBy) !== String(req.user.id || req.user._id)) {
+            return res.status(403).json({ error: 'Not authorized to view traceability logs.' });
+        }
+
+        const logs = await AuditLog.find({
+            $or: [
+                { asset: asset._id },
+                { details: { $regex: String(asset._id) } }
+            ]
+        })
+            .populate('userId', 'name email role')
+            .sort({ createdAt: -1 });
+
+        res.json({
+            asset: {
+                _id: asset._id,
+                filename: asset.filename,
+                uploadedBy: asset.uploadedBy,
+                currentVersion: asset.currentVersion,
+                updatedAt: asset.updatedAt, // RESTORED
+                createdAt: asset.createdAt, // RESTORED
+                versions: asset.versions || []
+            },
+            logs
+        });
+    } catch (err) {
+        console.error('[TRACEABILITY]', err.message);
+        res.status(500).json({ error: 'Failed to fetch traceability data.' });
+    }
 };

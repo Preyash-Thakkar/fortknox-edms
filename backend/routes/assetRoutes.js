@@ -36,5 +36,7 @@ router.get('/assets/:id/versions', authenticate, assetController.getVersions);
 router.get('/assets/:id/view', authenticate, assetController.viewAsset);
 router.get('/assets/:id/raw', authenticate, assetController.rawAsset);
 router.get('/stats', authenticate, assetController.getStats);
+router.post('/assets/:id/versions', authenticate, upload.single('file'), assetController.uploadNewVersion);
+router.get('/assets/:id/traceability', authenticate, assetController.getAssetTraceability);
 
 module.exports = router;

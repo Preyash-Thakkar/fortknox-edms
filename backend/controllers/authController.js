@@ -29,7 +29,7 @@ exports.login = async (req, res) => {
 };
 
 exports.logout = (req, res) => {
-    res.clearCookie('fk_token');
+    res.clearCookie('whcr_token');
     res.json({ message: 'Logged out.' });
 };
 

@@ -47,13 +47,16 @@ export default function SecureViewer({ session, onClose }) {
     setStatus('loading');
     (async () => {
       try {
-        const res = await api.get(`/assets/${assetId}/raw`, { responseType: 'blob' });
+        const res = await api.get(`/assets/${assetId}/raw`, {
+          params: { v: asset.version },
+          responseType: 'blob'
+        });
         if (cancelled) return;
         // Force the MIME type so the iframe/img render correctly. Word arrives as
         // PDF (previewKind 'pdf') even though its filename ends in .docx.
         const mime = previewKind === 'pdf' ? 'application/pdf'
           : previewKind === 'image' ? (res.data.type || 'image/png')
-          : res.data.type;
+            : res.data.type;
         const typed = new Blob([res.data], { type: mime });
         const url = URL.createObjectURL(typed);
         blobRef.current = url;
@@ -111,7 +114,11 @@ export default function SecureViewer({ session, onClose }) {
   const doDownload = async () => {
     if (!canDownload) return;
     try {
-      const res = await api.get(`/assets/${assetId}/raw`, { params: { download: 1 }, responseType: 'blob' });
+      // FIXED: Pass the version parameter along with the download flag
+      const res = await api.get(`/assets/${assetId}/raw`, {
+        params: { download: 1, v: asset.version },
+        responseType: 'blob'
+      });
       const url = URL.createObjectURL(res.data);
       const a = document.createElement('a');
       a.href = url; a.download = asset.filename;

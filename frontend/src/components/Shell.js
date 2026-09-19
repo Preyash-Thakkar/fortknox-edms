@@ -1,15 +1,17 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { api, useAuth } from '../auth';
 import { useCategories } from '../useCategories';
 import { Icon } from './ui';
 import ProfileModal from './ProfileModal';
+import { io } from 'socket.io-client'; // <-- WebSocket Import
 
-// Static items that always appear.
 const NAV_STATIC = [
   { to: '/requests', icon: 'pending_actions', label: 'Access Requests', roles: ['Admin', 'Engineering', 'Legal', 'Management'] },
+  { to: '/users', icon: 'manage_accounts', label: 'User Management', roles: ['Admin', 'Management'] },
 ];
 const NAV_BOTTOM = [
+  { to: '/repositories', icon: 'create_new_folder', label: 'Manage Repositories', roles: ['Admin'] }, // added from previous step
   { to: '/settings', icon: 'verified_user', label: 'Security Settings', roles: ['Admin'] },
   { to: '/audit', icon: 'terminal', label: 'System Logs', roles: ['Admin'] },
 ];
@@ -30,10 +32,9 @@ function NavItem({ to, icon, label }) {
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `flex items-center gap-3 px-4 py-2 transition-all duration-150 border-l-4 ${
-          isActive
-            ? 'border-on-primary bg-white/10 text-white font-semibold'
-            : 'border-transparent text-on-primary-container hover:bg-white/5 hover:text-white'
+        `flex items-center gap-3 px-4 py-2 transition-all duration-150 border-l-4 ${isActive
+          ? 'border-on-primary bg-white/10 text-white font-semibold'
+          : 'border-transparent text-on-primary-container hover:bg-white/5 hover:text-white'
         }`
       }
     >
@@ -63,12 +64,29 @@ export default function Shell({ children, breadcrumb }) {
     } catch { /* ignore */ }
   }, []);
 
-  // Poll notifications periodically + on mount.
+  // 1. Initial Load
   useEffect(() => {
     loadNotifs();
-    const id = setInterval(loadNotifs, 20000);
-    return () => clearInterval(id);
   }, [loadNotifs]);
+
+  // 2. Real-Time Socket Connection (Replaces setInterval)
+  useEffect(() => {
+    if (!user || !user._id) return;
+
+    const socketUrl = process.env.REACT_APP_API_URL || 'https://testdevserver1.wehear.in/';
+    const socket = io(socketUrl, { withCredentials: true });
+
+    // Join the private room for this user
+    socket.emit('join', user._id);
+
+    // Listen for instant updates from the backend
+    socket.on('new_notification', () => {
+      loadNotifs(); // Fetch the new notification and bump the red counter instantly
+    });
+
+    // Cleanup on unmount
+    return () => socket.disconnect();
+  }, [user, loadNotifs]);
 
   const openBell = async () => {
     const next = !bellOpen;
@@ -89,13 +107,12 @@ export default function Shell({ children, breadcrumb }) {
     <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
       <aside className="h-screen w-64 bg-primary flex flex-col shrink-0">
-        <div className="p-lg flex-1 overflow-y-auto">
+        <div className="p-lg flex-1 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+
           <div className="flex items-center gap-base mb-xl">
-            <div className="w-9 h-9 bg-white/10 rounded flex items-center justify-center text-white">
-              <Icon name="shield" fill={1} />
-            </div>
+            <img src="/logo-icon.jpeg" alt="WeHear Central Repository" className="w-9 h-9 object-contain" />
             <div>
-              <h1 className="font-headline-sm text-headline-sm font-bold text-white leading-tight">Fort Knox EDMS</h1>
+              <h1 className="font-headline-sm text-headline-sm font-bold text-white leading-tight">WeHear Central Repository</h1>
               <p className="font-label-md text-label-md text-on-primary-container uppercase tracking-wider">
                 Enterprise Security
               </p>
@@ -171,26 +188,57 @@ export default function Shell({ children, breadcrumb }) {
                   </span>
                 )}
               </button>
+
               {bellOpen && (
                 <div className="absolute right-0 mt-2 w-80 bg-surface border border-outline-variant rounded-lg shadow-lg overflow-hidden z-20">
-                  <div className="px-md py-2 border-b border-outline-variant flex items-center justify-between">
+                  <div className="px-md py-3 border-b border-outline-variant flex items-center justify-between bg-surface-container-lowest">
                     <span className="font-label-lg text-label-lg font-bold text-primary">Notifications</span>
-                    <button onClick={() => setBellOpen(false)}><Icon name="close" size={16} /></button>
+                    <button onClick={() => setBellOpen(false)} className="text-on-surface-variant hover:text-error transition-colors">
+                      <Icon name="close" size={18} />
+                    </button>
                   </div>
+
                   <div className="max-h-80 overflow-y-auto divide-y divide-outline-variant">
                     {notifs.length === 0 ? (
-                      <p className="px-md py-6 text-center text-on-surface-variant font-body-sm text-body-sm">No notifications yet.</p>
-                    ) : notifs.map((n) => (
-                      <div key={n._id} className={`px-md py-3 ${n.read ? '' : 'bg-secondary-container/20'}`}>
-                        <p className="font-body-sm text-body-sm text-on-surface">{n.text}</p>
-                        <p className="font-label-md text-label-md text-on-surface-variant mt-1">{new Date(n.createdAt).toLocaleString()}</p>
+                      <div className="px-md py-8 text-center text-on-surface-variant flex flex-col items-center">
+                        <Icon name="notifications_off" size={32} className="mb-2 opacity-50" />
+                        <p className="font-body-sm text-body-sm">No notifications yet.</p>
                       </div>
-                    ))}
+                    ) : notifs.map((n) => {
+                      // Determine icon and color based on the notification text
+                      const isApproved = n.text.toLowerCase().includes('approved');
+                      const isDenied = n.text.toLowerCase().includes('denied');
+                      const iconName = isApproved ? 'check_circle' : isDenied ? 'cancel' : 'pending_actions';
+                      const iconColor = isApproved ? 'text-tertiary' : isDenied ? 'text-error' : 'text-secondary';
+
+                      return (
+                        <Link
+                          key={n._id}
+                          to={n.link || '#'}
+                          onClick={() => setBellOpen(false)}
+                          className={`flex gap-3 px-md py-3 transition-colors hover:bg-surface-container-high ${n.read ? 'bg-surface' : 'bg-secondary-container/20'}`}
+                        >
+                          <div className="shrink-0 mt-0.5">
+                            <Icon name={iconName} size={20} className={iconColor} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-body-sm text-body-sm text-on-surface leading-snug">
+                              {/* Splits the text by quotes to bold the filename dynamically */}
+                              {n.text.split('"').map((part, i) =>
+                                i % 2 === 1 ? <strong key={i} className="font-semibold text-primary">"{part}"</strong> : part
+                              )}
+                            </p>
+                            <p className="font-label-md text-label-md text-on-surface-variant mt-1.5 uppercase tracking-wider">
+                              {new Date(n.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                          </div>
+                        </Link>
+                      );
+                    })}
                   </div>
                 </div>
               )}
             </div>
-
             <button
               onClick={doLogout}
               className="font-label-lg text-label-lg bg-primary text-on-primary px-4 py-2 rounded-lg font-bold hover:opacity-90 transition-opacity flex items-center gap-2"

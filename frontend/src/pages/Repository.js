@@ -7,9 +7,10 @@ import {
 } from '../components/ui';
 import SecureViewer from '../components/SecureViewer';
 import UploadModal from '../components/UploadModal';
-import VersionDrawer from '../components/VersionDrawer';
 import AssetAdminModal from '../components/AssetAdminModal';
 import RequestModal from '../components/RequestModal';
+import VersionModal from '../components/VersionModal';
+import TraceabilityModal from '../components/TraceabilityModal';
 
 export default function Repository() {
   const { categoryId } = useParams();
@@ -22,9 +23,10 @@ export default function Repository() {
   const [showUpload, setShowUpload] = useState(false);
   const [versionAsset, setVersionAsset] = useState(null);
   const [adminAsset, setAdminAsset] = useState(null);
+  const [checkInAsset, setCheckInAsset] = useState(null);
   const [bulkMode, setBulkMode] = useState(false);
   const [msg, setMsg] = useState('');
-  const [deptFilter, setDeptFilter] = useState('');     // '' = all departments
+  const [deptFilter, setDeptFilter] = useState('');
   const [showFilter, setShowFilter] = useState(false);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -32,7 +34,7 @@ export default function Repository() {
   const [requestingAsset, setRequestingAsset] = useState(null);
   const PAGE_SIZE = 25;
 
-  const category = categories.find((c) => c._id === categoryId);
+  const category = categories.find((c) => c._id === categoryId || c.id === categoryId);
   const departments = category?.departments || [];
   const canUpload = user.role === 'Admin' || (category && category.allowedRoles.includes(user.role));
 
@@ -46,9 +48,15 @@ export default function Repository() {
         api.get('/assets', { params }),
         api.get('/stats'),
       ]);
-      setAssets(a.data.assets);
+
+      const normalizedAssets = (a.data.assets || []).map(ast => ({
+        ...ast,
+        _id: ast._id || ast.id
+      }));
+
+      setAssets(normalizedAssets);
       setTotalPages(a.data.totalPages || 1);
-      setTotal(a.data.total || a.data.assets.length);
+      setTotal(a.data.total || normalizedAssets.length);
       setStats(s.data);
     } catch (err) {
       setMsg(err.response?.data?.error || 'Failed to load.');
@@ -58,27 +66,31 @@ export default function Repository() {
   }, [categoryId, deptFilter, page]);
 
   useEffect(() => { load(); }, [load]);
-  // Reset to page 1 when the category or department filter changes.
   useEffect(() => { setPage(1); }, [categoryId, deptFilter]);
-  // Reset the department filter when switching categories.
   useEffect(() => { setDeptFilter(''); }, [categoryId]);
 
-  const openView = async (id) => {
+  const openView = async (id, versionNumber = null) => {
     try {
-      const { data } = await api.get(`/assets/${id}/view`);
+      // If a specific version is requested, append ?v= to the URL
+      const url = versionNumber ? `/assets/${id}/view?v=${versionNumber}` : `/assets/${id}/view`;
+      const { data } = await api.get(url);
       setSession(data);
     } catch (err) {
       setMsg(err.response?.data?.error || 'Cannot open secure view.');
     }
   };
 
-  // Direct download from the table (only shown when the user's role may download).
-  const downloadAsset = async (id, filename) => {
+  const downloadAsset = async (id, filename, versionNumber = null) => {
     try {
-      const res = await api.get(`/assets/${id}/raw`, { params: { download: 1 }, responseType: 'blob' });
+      // Append the v parameter to the backend request
+      const params = { download: 1 };
+      if (versionNumber) params.v = versionNumber;
+
+      const res = await api.get(`/assets/${id}/raw`, { params, responseType: 'blob' });
       const url = URL.createObjectURL(res.data);
       const a = document.createElement('a');
-      a.href = url; a.download = filename;
+      a.href = url;
+      a.download = versionNumber ? `v${versionNumber}_${filename}` : filename;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
     } catch (err) {
@@ -111,14 +123,13 @@ export default function Repository() {
             icon="filter_list"
             onClick={() => setShowFilter((v) => !v)}
           >
-            {deptFilter ? `Dept: ${departments.find((d) => d._id === deptFilter)?.name || 'Filter'}` : 'Filter'}
+            {deptFilter ? `Dept: ${departments.find((d) => (d._id || d.id) === deptFilter)?.name || 'Filter'}` : 'Filter'}
           </Button>
           {canUpload && <Button icon="upload_file" onClick={() => { setBulkMode(false); setShowUpload(true); }}>Upload Asset</Button>}
           {canUpload && <Button variant="secondary" icon="library_add" onClick={() => { setBulkMode(true); setShowUpload(true); }}>Bulk Upload</Button>}
         </div>
       </div>
 
-      {/* Filter panel — filters the list by department within this category */}
       {showFilter && (
         <div className="bg-surface-container-lowest border border-outline-variant rounded-lg p-md mb-lg flex items-center gap-md flex-wrap">
           <span className="font-label-lg text-label-lg text-on-surface-variant uppercase tracking-widest">Department</span>
@@ -131,9 +142,9 @@ export default function Repository() {
           </button>
           {departments.map((d) => (
             <button
-              key={d._id}
-              onClick={() => setDeptFilter(d._id)}
-              className={`px-3 py-1.5 rounded text-label-lg font-bold border transition-all ${deptFilter === d._id ? 'bg-primary text-on-primary border-primary' : 'border-outline-variant text-on-surface-variant hover:border-primary'
+              key={d._id || d.id}
+              onClick={() => setDeptFilter(d._id || d.id)}
+              className={`px-3 py-1.5 rounded text-label-lg font-bold border transition-all ${deptFilter === (d._id || d.id) ? 'bg-primary text-on-primary border-primary' : 'border-outline-variant text-on-surface-variant hover:border-primary'
                 }`}
             >
               {d.name}
@@ -154,12 +165,12 @@ export default function Repository() {
 
       <div className="bg-surface-container-lowest border border-outline-variant rounded-lg shadow-sm overflow-hidden">
         <div className="grid grid-cols-12 gap-gutter px-md py-3 bg-surface-container-low border-b border-outline-variant">
-          <div className="col-span-4 font-label-md text-label-md text-on-surface-variant uppercase tracking-widest">Filename</div>
+          <div className="col-span-3 font-label-md text-label-md text-on-surface-variant uppercase tracking-widest">Filename</div>
           <div className="col-span-2 font-label-md text-label-md text-on-surface-variant uppercase tracking-widest">Department</div>
           <div className="col-span-1 font-label-md text-label-md text-on-surface-variant uppercase tracking-widest">Size</div>
           <div className="col-span-2 font-label-md text-label-md text-on-surface-variant uppercase tracking-widest">Sensitivity</div>
           <div className="col-span-2 font-label-md text-label-md text-on-surface-variant uppercase tracking-widest">Access</div>
-          <div className="col-span-1 text-right" />
+          <div className="col-span-2 text-right" />
         </div>
 
         {loading ? (
@@ -168,77 +179,100 @@ export default function Repository() {
           <EmptyState icon="folder_off" title="No assets here yet" subtitle="Uploaded assets will appear in this repository." />
         ) : (
           <div className="divide-y divide-outline-variant">
-            {assets.map((a, idx) => (
-              <div
-                key={a._id}
-                className={`grid grid-cols-12 gap-gutter px-md py-3 items-center group transition-colors hover:bg-surface-container ${idx % 2 ? 'bg-surface-container-low/40' : ''
-                  }`}
-              >
-                <div className="col-span-4 flex items-center gap-3 min-w-0">
-                  <FileTypeIcon filename={a.filename} type={a.type} />
-                  <span className="font-body-md text-body-md font-semibold text-primary truncate">{a.filename}</span>
-                  {a.currentVersion > 1 && (
-                    <span className="font-data-mono text-[11px] text-on-surface-variant shrink-0">v{a.currentVersion}</span>
-                  )}
+            {assets.map((a, idx) => {
+              const uploaderId = a.uploadedBy?._id || a.uploadedBy;
+              const currentUserId = user?._id || user?.id;
+              const isOwner = uploaderId && currentUserId && String(uploaderId) === String(currentUserId);
+              const isHead = user?.role === 'Management';
+              const isAdmin = user?.role === 'Admin';
+              const canVersion = a.canEdit || isAdmin || isHead || isOwner;
+
+              // MULTI-TIER REQUEST LOGIC
+              const canRequestView = !a.accessible && !a.requestPendingView;
+              const canRequestDownload = a.accessible && !a.canDownload && !a.requestPendingDownload && !isAdmin && !isHead && !isOwner;
+              const canRequestEdit = a.accessible && !canVersion && !a.requestPendingEdit && !isAdmin && !isHead && !isOwner;
+              const showRequestBtn = canRequestView || canRequestDownload || canRequestEdit;
+
+              return (
+                <div
+                  key={a._id}
+                  className={`grid grid-cols-12 gap-gutter px-md py-3 items-center group transition-colors hover:bg-surface-container ${idx % 2 ? 'bg-surface-container-low/40' : ''}`}
+                >
+                  <div className="col-span-3 flex items-center gap-3 min-w-0">
+                    <FileTypeIcon filename={a.filename} type={a.type} />
+                    <span className="font-body-md text-body-md font-semibold text-primary truncate">{a.filename}</span>
+                    {a.currentVersion > 1 && (
+                      <span className="font-data-mono text-[11px] text-on-surface-variant shrink-0">v{a.currentVersion}</span>
+                    )}
+                  </div>
+                  <div className="col-span-2">
+                    {a.department ? (
+                      <span className="px-2 py-0.5 rounded-sm bg-surface-container-high text-on-surface-variant text-[11px] font-semibold">{a.department.name}</span>
+                    ) : (
+                      <span className="text-on-surface-variant text-[12px]">—</span>
+                    )}
+                  </div>
+                  <div className="col-span-1 font-data-mono text-data-mono text-on-surface-variant">{bytes(a.size)}</div>
+                  <div className="col-span-2"><SensitivityBadge level={a.sensitivity} /></div>
+
+                  <div className="col-span-2">
+                    {a.accessible ? (
+                      <span className="flex items-center gap-1.5 text-on-tertiary-container font-label-md text-label-md">
+                        <Icon name="check_circle" size={16} fill={1} /> Accessible
+                      </span>
+                    ) : a.requestPendingView ? (
+                      <span className="flex items-center gap-1.5 text-secondary font-label-md text-label-md">
+                        <Icon name="hourglass_top" size={16} /> Requested
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1.5 text-error font-label-md text-label-md">
+                        <Icon name="lock" size={16} fill={1} /> Restricted
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="col-span-2 flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-surface-container pl-2 rounded">
+                    {a.accessible && (
+                      <button title="Secure View" onClick={() => openView(a._id)} className="p-2 rounded hover:bg-surface-container-high text-primary">
+                        <Icon name="visibility" size={20} />
+                      </button>
+                    )}
+                    {a.accessible && a.canDownload && (
+                      <button title="Download" onClick={() => downloadAsset(a._id, a.filename)} className="p-2 rounded hover:bg-surface-container-high text-tertiary">
+                        <Icon name="download" size={20} />
+                      </button>
+                    )}
+                    {a.accessible && canVersion && (
+                      <button title="Check-In New Version" onClick={() => setCheckInAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-primary transition-colors">
+                        <Icon name="publish" size={20} />
+                      </button>
+                    )}
+                    {a.accessible && (
+                      <button title="Version History" onClick={() => setVersionAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-secondary">
+                        <Icon name="history" size={20} />
+                      </button>
+                    )}
+
+                    {showRequestBtn && (
+                      <button onClick={() => requestAccess(a)} className="border border-outline-variant px-3 py-1 rounded text-[12px] hover:bg-surface-container-high flex items-center gap-1 transition-colors text-on-surface-variant font-semibold shadow-sm ml-2 shrink-0">
+                        <Icon name="key" size={14} />
+                        {a.accessible ? 'Upgrade' : 'Request'}
+                      </button>
+                    )}
+
+                    {isAdmin && (
+                      <button title="Manage (admin)" onClick={() => setAdminAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-on-surface-variant">
+                        <Icon name="settings" size={20} />
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="col-span-2">
-                  {a.department ? (
-                    <span className="px-2 py-0.5 rounded-sm bg-surface-container-high text-on-surface-variant text-[11px] font-semibold">{a.department.name}</span>
-                  ) : (
-                    <span className="text-on-surface-variant text-[12px]">—</span>
-                  )}
-                </div>
-                <div className="col-span-1 font-data-mono text-data-mono text-on-surface-variant">{bytes(a.size)}</div>
-                <div className="col-span-2"><SensitivityBadge level={a.sensitivity} /></div>
-                <div className="col-span-2">
-                  {a.accessible ? (
-                    <span className="flex items-center gap-1.5 text-on-tertiary-container font-label-md text-label-md">
-                      <Icon name="check_circle" size={16} fill={1} /> Accessible
-                    </span>
-                  ) : a.requestPending ? (
-                    <span className="flex items-center gap-1.5 text-secondary font-label-md text-label-md">
-                      <Icon name="hourglass_top" size={16} /> Requested
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1.5 text-error font-label-md text-label-md">
-                      <Icon name="lock" size={16} fill={1} /> Restricted
-                    </span>
-                  )}
-                </div>
-                <div className="col-span-1 flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {a.accessible && (
-                    <button title="Secure View" onClick={() => openView(a._id)} className="p-2 rounded hover:bg-surface-container-high text-primary">
-                      <Icon name="visibility" size={20} />
-                    </button>
-                  )}
-                  {a.accessible && a.canDownload && (
-                    <button title="Download" onClick={() => downloadAsset(a._id, a.filename)} className="p-2 rounded hover:bg-surface-container-high text-tertiary">
-                      <Icon name="download" size={20} />
-                    </button>
-                  )}
-                  {a.accessible && (
-                    <button title="Version History" onClick={() => setVersionAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-secondary">
-                      <Icon name="history" size={20} />
-                    </button>
-                  )}
-                  {!a.accessible && !a.requestPending && (
-                    <button onClick={() => requestAccess(a)} className="border px-3 py-1 rounded text-sm hover:bg-gray-100 flex items-center gap-1">
-                      <Icon name="key" /> Request
-                    </button>
-                  )}
-                  {user.role === 'Admin' && (
-                    <button title="Manage (admin)" onClick={() => setAdminAsset(a)} className="p-2 rounded hover:bg-surface-container-high text-on-surface-variant">
-                      <Icon name="settings" size={20} />
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
 
-      {/* Pagination */}
       {!loading && total > 0 && (
         <div className="flex items-center justify-between mt-md">
           <span className="font-body-sm text-body-sm text-on-surface-variant">
@@ -260,7 +294,28 @@ export default function Repository() {
           onUploaded={() => { setShowUpload(false); setMsg(bulkMode ? 'Files uploaded.' : 'Asset uploaded.'); load(); refreshCategories(); }}
         />
       )}
-      {versionAsset && <VersionDrawer asset={versionAsset} onClose={() => setVersionAsset(null)} />}
+
+      {checkInAsset && (
+        <VersionModal
+          asset={checkInAsset}
+          onClose={() => setCheckInAsset(null)}
+          onUploaded={() => {
+            setCheckInAsset(null);
+            setMsg('New version checked in successfully.');
+            load();
+          }}
+        />
+      )}
+
+      {versionAsset && (
+        <TraceabilityModal
+          assetId={versionAsset._id}
+          onClose={() => setVersionAsset(null)}
+          onView={openView}
+          onDownload={downloadAsset}
+        />
+      )}
+
       {adminAsset && (
         <AssetAdminModal
           asset={adminAsset}
@@ -269,14 +324,13 @@ export default function Repository() {
           onChanged={() => { load(); }}
         />
       )}
-      {/* --- CUSTOM REQUEST MODAL --- */}
       {requestingAsset && (
         <RequestModal
           asset={requestingAsset}
           onClose={() => setRequestingAsset(null)}
           onSuccess={() => {
             setMsg('Access request submitted successfully.');
-            load(); // This reloads your asset list
+            load();
           }}
         />
       )}

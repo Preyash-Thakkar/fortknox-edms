@@ -9,7 +9,8 @@ import Search from './pages/Search';
 import Requests from './pages/Requests';
 import Audit from './pages/Audit';
 import Settings from './pages/Settings';
-
+import Users from './pages/Users';
+import Repositories from './pages/Repositories';
 // Guard: requires a valid session; optionally restricts to certain roles.
 function Protected({ children, roles }) {
   const { user } = useAuth();
@@ -68,6 +69,8 @@ function Router() {
         path="/requests"
         element={<Protected><Page breadcrumb="Access Requests"><Requests /></Page></Protected>}
       />
+      <Route path="/users" element={<Protected roles={['Admin', 'Management']}><Users /></Protected>} />
+      <Route path="/repositories" element={<Protected roles={['Admin']}><Repositories /></Protected>} />
       <Route
         path="/audit"
         element={<Protected roles={['Admin']}><Page breadcrumb="System Logs"><Audit /></Page></Protected>}

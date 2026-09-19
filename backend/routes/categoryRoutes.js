@@ -5,8 +5,8 @@ const categoryController = require('../controllers/categoryController');
 const router = express.Router();
 
 router.get('/categories', authenticate, categoryController.getCategories);
-router.post('/categories', authenticate, authorize('Admin'), categoryController.createCategory);
+router.post('/categories', authenticate, authorize('Admin'), categoryController.createRepository);
 router.patch('/categories/:id', authenticate, authorize('Admin'), categoryController.updateCategory);
-router.delete('/categories/:id', authenticate, authorize('Admin'), categoryController.deleteCategory);
+router.delete('/categories/:id', authenticate, authorize('Admin'), categoryController.deleteRepository);
 
 module.exports = router;
